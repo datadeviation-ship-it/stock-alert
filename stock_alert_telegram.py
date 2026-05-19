@@ -243,8 +243,8 @@ def kljuc(ticker, razina, tip):
 # ─────────────────────────────────────────────
 
 def dohvati_cijenu(ticker):
-    url = (f"https://financialmodelingprep.com/api/v3/quote/{ticker}"
-           f"?apikey={FMP_API_KEY}")
+    url = (f"https://financialmodelingprep.com/stable/quote"
+           f"?symbol={ticker}&apikey={FMP_API_KEY}")
     try:
         req = urllib.request.Request(
             url, headers={"User-Agent": "Mozilla/5.0"})
