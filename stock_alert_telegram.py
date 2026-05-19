@@ -32,9 +32,9 @@ from datetime import datetime
 
 import os
 
-FMP_API_KEY      = os.environ.get("UuXfLNxQPWcQH9hTR7LGrZRyTYo6SCi6", "")
-TELEGRAM_TOKEN   = os.environ.get("8789938727:AAGYZ3-aeR5UeYNhijK6jR02c4sCR7nbQTE", "")
-TELEGRAM_CHAT_ID = os.environ.get("885140350", "")    
+FMP_API_KEY      = os.environ.get("FMP_API_KEY", "")
+TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 PRAG_POSTO = 0.5   # alarm kada cijena probije razinu za 0,5%+
 
