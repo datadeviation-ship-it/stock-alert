@@ -1,69 +1,22 @@
-"""
-stock_alert_telegram.py
-=======================
-Prati cijene dionica i šalje Telegram poruku kada dionica
-probije zadanu razinu za više od 0,5%.
-
-Potrebno:
-    pip install --user requests
-
-Pokretanje:
-    python stock_alert_telegram.py
-
-Postavljanje Telegram bota (3 minute):
-    1. Otvori Telegram → traži @BotFather
-    2. Pošalji /newbot → daj ime botu → dobiješ TOKEN
-    3. Otvori svog novog bota → pošalji mu bilo što (npr. "zdravo")
-    4. Otvori u browseru:
-       https://api.telegram.org/bot<TOKEN>/getUpdates
-    5. U JSON odgovoru pronađi "id" unutar "chat" — to je tvoj CHAT_ID
-    6. Upiši TOKEN i CHAT_ID dolje
-"""
-
 import urllib.request
 import urllib.parse
 import json
 import os
 from datetime import datetime
 
-# ─────────────────────────────────────────────
-#  KONFIGURACIJA
-# ─────────────────────────────────────────────
-
+# KONFIGURACIJA
 import os
-
 FMP_API_KEY      = os.environ.get("FMP_API_KEY", "")
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-PRAG_POSTO = 0.5   # alarm kada cijena probije razinu za 0,5%+
+PRAG_POSTO = 0.5
 
-# ─────────────────────────────────────────────
-#  LISTA DIONICA
-# ─────────────────────────────────────────────
-
+# LISTA DIONICA — samo US tržište
 DIONICE = [
-    # ── Tvoje pozicije ───────────────────────
-    {
-        "ticker":   "FFH.TO",
-        "naziv":    "Fairfax Financial",
-        "valuta":   "CAD",
-        "razina":   1500.00,
-        "tip":      "iznad",
-        "napomena": "Otpor — razmatraj prodaju",
-    },
-    {
-        "ticker":   "FFH.TO",
-        "naziv":    "Fairfax Financial",
-        "valuta":   "CAD",
-        "razina":   1300.00,
-        "tip":      "ispod",
-        "napomena": "Podrška — razmatraj dodavanje",
-    },
     {
         "ticker":   "TDG",
         "naziv":    "TransDigm Group",
-        "valuta":   "USD",
         "razina":   1350.00,
         "tip":      "iznad",
         "napomena": "ATH zona",
@@ -71,7 +24,6 @@ DIONICE = [
     {
         "ticker":   "TDG",
         "naziv":    "TransDigm Group",
-        "valuta":   "USD",
         "razina":   1100.00,
         "tip":      "ispod",
         "napomena": "Stop-loss razina",
@@ -79,7 +31,6 @@ DIONICE = [
     {
         "ticker":   "NTDOY",
         "naziv":    "Nintendo ADR",
-        "valuta":   "USD",
         "razina":   14.50,
         "tip":      "iznad",
         "napomena": "Switch 2 momentum",
@@ -87,7 +38,6 @@ DIONICE = [
     {
         "ticker":   "NTDOY",
         "naziv":    "Nintendo ADR",
-        "valuta":   "USD",
         "razina":   9.50,
         "tip":      "ispod",
         "napomena": "Dodaj poziciju",
@@ -95,48 +45,27 @@ DIONICE = [
     {
         "ticker":   "AN",
         "naziv":    "AutoNation",
-        "valuta":   "USD",
         "razina":   210.00,
         "tip":      "iznad",
-        "napomena": "Ciklični vrhunac zona",
+        "napomena": "Ciklicni vrhunac zona",
     },
     {
         "ticker":   "AN",
         "naziv":    "AutoNation",
-        "valuta":   "USD",
         "razina":   155.00,
         "tip":      "ispod",
-        "napomena": "Jaka podrška",
+        "napomena": "Jaka podrska",
     },
-    {
-        "ticker":   "VIDRALA.MC",
-        "naziv":    "Vidrala",
-        "valuta":   "EUR",
-        "razina":   105.00,
-        "tip":      "iznad",
-        "napomena": "Proboj otpora",
-    },
-    {
-        "ticker":   "VIDRALA.MC",
-        "naziv":    "Vidrala",
-        "valuta":   "EUR",
-        "razina":   82.00,
-        "tip":      "ispod",
-        "napomena": "Podrška",
-    },
-    # ── Dodatne dionice ──────────────────────
     {
         "ticker":   "CHTR",
         "naziv":    "Charter Communications",
-        "valuta":   "USD",
         "razina":   250.00,
         "tip":      "iznad",
-        "napomena": "FCF infleksija — bull case",
+        "napomena": "FCF infleksija bull case",
     },
     {
         "ticker":   "CHTR",
         "naziv":    "Charter Communications",
-        "valuta":   "USD",
         "razina":   140.00,
         "tip":      "ispod",
         "napomena": "Bear scenarij",
@@ -144,15 +73,27 @@ DIONICE = [
     {
         "ticker":   "BRK-B",
         "naziv":    "Berkshire Hathaway B",
-        "valuta":   "USD",
         "razina":   480.00,
         "tip":      "iznad",
         "napomena": "Novo 52-tjedno visoko",
     },
     {
+        "ticker":   "BRK-B",
+        "naziv":    "Berkshire Hathaway B",
+        "razina":   420.00,
+        "tip":      "ispod",
+        "napomena": "Podrska",
+    },
+    {
         "ticker":   "META",
         "naziv":    "Meta Platforms",
-        "valuta":   "USD",
+        "razina":   620.00,
+        "tip":      "iznad",
+        "napomena": "ATH zona",
+    },
+    {
+        "ticker":   "META",
+        "naziv":    "Meta Platforms",
         "razina":   550.00,
         "tip":      "ispod",
         "napomena": "Promatraj reakciju",
@@ -160,66 +101,20 @@ DIONICE = [
     {
         "ticker":   "NVR",
         "naziv":    "NVR Inc.",
-        "valuta":   "USD",
         "razina":   8500.00,
         "tip":      "iznad",
         "napomena": "Stanogradnja tailwind",
     },
-    # ── Europske dionice ─────────────────────
     {
-        "ticker":   "AIR.PA",
-        "naziv":    "Airbus",
-        "valuta":   "EUR",
-        "razina":   175.00,
-        "tip":      "iznad",
-        "napomena": "Obrambeni aerospace bull",
-    },
-    {
-        "ticker":   "AIR.PA",
-        "naziv":    "Airbus",
-        "valuta":   "EUR",
-        "razina":   140.00,
+        "ticker":   "NVR",
+        "naziv":    "NVR Inc.",
+        "razina":   7000.00,
         "tip":      "ispod",
-        "napomena": "Supply chain rizik",
-    },
-    {
-        "ticker":   "SAP.DE",
-        "naziv":    "SAP SE",
-        "valuta":   "EUR",
-        "razina":   240.00,
-        "tip":      "iznad",
-        "napomena": "Cloud momentum — ATH zona",
-    },
-    {
-        "ticker":   "SAP.DE",
-        "naziv":    "SAP SE",
-        "valuta":   "EUR",
-        "razina":   156.00,
-        "tip":      "iznad",
-        "napomena": "Dugoročna podrška",
-    },
-    {
-        "ticker":   "MC.PA",
-        "naziv":    "LVMH",
-        "valuta":   "EUR",
-        "razina":   462.00,
-        "tip":      "ispod",
-        "napomena": "Luxury recovery — China demand",
-    },
-    {
-        "ticker":   "MC.PA",
-        "naziv":    "LVMH",
-        "valuta":   "EUR",
-        "razina":   480.00,
-        "tip":      "ispod",
-        "napomena": "Višegodišnja podrška",
+        "napomena": "Podrska",
     },
 ]
 
-# ─────────────────────────────────────────────
-#  PAMĆENJE POSLANIH — sprječava duplikate
-# ─────────────────────────────────────────────
-
+# PAMCENJE POSLANIH
 POSLANO_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "stock_alert_poslano.json"
@@ -238,10 +133,7 @@ def spremi_poslano(poslano):
 def kljuc(ticker, razina, tip):
     return f"{ticker}_{razina}_{tip}"
 
-# ─────────────────────────────────────────────
-#  FMP — DOHVAT CIJENA
-# ─────────────────────────────────────────────
-
+# FMP DOHVAT CIJENE
 def dohvati_cijenu(ticker):
     url = (f"https://financialmodelingprep.com/stable/quote"
            f"?symbol={ticker}&apikey={FMP_API_KEY}")
@@ -254,42 +146,36 @@ def dohvati_cijenu(ticker):
             return round(float(data[0]["price"]), 4)
         return None
     except Exception as e:
-        print(f"    Greška {ticker}: {e}")
+        print(f"Greska {ticker}: {e}")
         return None
 
-# ─────────────────────────────────────────────
-#  TELEGRAM — SLANJE PORUKE
-# ─────────────────────────────────────────────
-
+# TELEGRAM
 def posalji_telegram(upozorenja):
-    """Šalje jednu Telegram poruku sa svim upozorenjima."""
     if not upozorenja:
         return False
 
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
+    broj = len(upozorenja)
 
-    linije = [f"📊 *Dionica probila razinu* — {now}\n"]
+    poruka = f"*STOCK ALERT* {now}\n"
+    poruka += f"_{broj} signal{'a' if broj > 1 else ''}_\n\n"
 
     for u in upozorenja:
         je_gore   = u["tip"] == "iznad"
-        ikona     = "🟢" if je_gore else "🔴"
-        smjer     = "GORE" if je_gore else "DOLJE"
+        ikona     = "\U0001f7e2" if je_gore else "\U0001f534"
+        smjer     = "PROBIO GORE" if je_gore else "PALO ISPOD"
         posto_str = f"+{u['posto']:.2f}%" if je_gore else f"{u['posto']:.2f}%"
 
-        linije.append(
-            f"{ikona} *{u['ticker']}* — {u['naziv']}\n"
-            f"   Cijena: `{u['cijena']:.2f} {u['valuta']}`\n"
-            f"   {smjer} od razine `{u['razina']:.2f}` ({posto_str})\n"
-            f"   _{u['napomena']}_\n"
-        )
+        poruka += f"{ikona} *{u['ticker']}*\n"
+        poruka += f"Cijena: `{u['cijena']:.2f} USD`\n"
+        poruka += f"{smjer} razine `{u['razina']:.2f}` ({posto_str})\n"
+        poruka += f"_{u['napomena']}_\n\n"
 
-    linije.append("_Nije investicijski savjet._")
-    tekst = "\n".join(linije)
+    poruka += "_Provjeri graf._"
 
-    # Telegram sendMessage API poziv
     params = urllib.parse.urlencode({
         "chat_id":    TELEGRAM_CHAT_ID,
-        "text":       tekst,
+        "text":       poruka,
         "parse_mode": "Markdown",
     }).encode("utf-8")
 
@@ -300,22 +186,20 @@ def posalji_telegram(upozorenja):
         with urllib.request.urlopen(req, timeout=10) as r:
             odgovor = json.loads(r.read())
         if odgovor.get("ok"):
-            print(f"  Telegram poruka poslana.")
+            print("Telegram poruka poslana.")
             return True
         else:
-            print(f"  Telegram greška: {odgovor}")
+            print(f"Telegram greska: {odgovor}")
             return False
     except Exception as e:
-        print(f"  Telegram greška: {e}")
+        print(f"Telegram greska: {e}")
         return False
 
-
 def test_telegram():
-    """Pošalji test poruku da provjeriš radi li veza."""
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
     params = urllib.parse.urlencode({
         "chat_id":    TELEGRAM_CHAT_ID,
-        "text":       f"Provjera veze — {now}\nStock alert bot aktivan.",
+        "text":       f"*Stock Alert bot aktivan*\nTest poruka {now}",
         "parse_mode": "Markdown",
     }).encode("utf-8")
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -324,42 +208,32 @@ def test_telegram():
         with urllib.request.urlopen(req, timeout=10) as r:
             odgovor = json.loads(r.read())
         if odgovor.get("ok"):
-            print("  Test poruka uspješno poslana na Telegram.")
+            print("Test poruka poslana.")
         else:
-            print(f"  Test greška: {odgovor}")
+            print(f"Greska: {odgovor}")
     except Exception as e:
-        print(f"  Test greška: {e}")
+        print(f"Greska: {e}")
 
-# ─────────────────────────────────────────────
-#  GLAVNA LOGIKA
-# ─────────────────────────────────────────────
-
+# GLAVNA LOGIKA
 def provjeri():
-    print(f"\n{'='*55}")
-    print(f"  Provjera: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
-    print(f"  Prag: {PRAG_POSTO}%")
-    print(f"{'='*55}")
+    print(f"Provjera: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
+    print(f"Prag: {PRAG_POSTO}%")
 
     poslano         = ucitaj_poslano()
     nova_upozorenja = []
 
-    # Skupi unique tickere
     unique = {}
     for d in DIONICE:
         if d["ticker"] not in unique:
             unique[d["ticker"]] = None
 
-    # Dohvati sve cijene
-    print("\n  Dohvaćam cijene...\n")
+    print("Dohvacam cijene...")
     for ticker in unique:
         cijena = dohvati_cijenu(ticker)
         unique[ticker] = cijena
         status = f"{cijena:.4f}" if cijena else "nije dostupno"
         print(f"  {ticker:<16} {status}")
 
-    print()
-
-    # Provjeri razine
     for d in DIONICE:
         ticker   = d["ticker"]
         razina   = d["razina"]
@@ -373,20 +247,15 @@ def provjeri():
         posto_odmak = ((cijena - razina) / razina) * 100
 
         probito = (
-            tip == "iznad"
-            and cijena > razina
-            and posto_odmak >= PRAG_POSTO
+            tip == "iznad" and cijena > razina and posto_odmak >= PRAG_POSTO
         ) or (
-            tip == "ispod"
-            and cijena < razina
-            and abs(posto_odmak) >= PRAG_POSTO
+            tip == "ispod" and cijena < razina and abs(posto_odmak) >= PRAG_POSTO
         )
 
         if probito:
             if k not in poslano:
                 smjer = "gore" if tip == "iznad" else "dolje"
-                print(f"  ALARM  {ticker}: razina {razina:.2f} "
-                      f"probita {smjer} ({posto_odmak:+.2f}%)")
+                print(f"ALARM {ticker}: razina {razina:.2f} probita {smjer} ({posto_odmak:+.2f}%)")
                 nova_upozorenja.append({
                     "ticker":   ticker,
                     "naziv":    d["naziv"],
@@ -394,7 +263,6 @@ def provjeri():
                     "razina":   razina,
                     "tip":      tip,
                     "napomena": d["napomena"],
-                    "valuta":   d["valuta"],
                     "posto":    posto_odmak,
                 })
                 poslano[k] = {
@@ -403,39 +271,25 @@ def provjeri():
                     "odmak_posto":       round(posto_odmak, 4),
                 }
             else:
-                print(f"  vec poslano  {ticker} razina {razina:.2f}")
+                print(f"Vec poslano: {ticker} razina {razina:.2f}")
         else:
             if k in poslano:
-                print(f"  reset  {ticker} razina {razina:.2f} "
-                      f"— cijena se vratila")
+                print(f"Reset: {ticker} razina {razina:.2f}")
                 del poslano[k]
 
-    # Pošalji Telegram
     if nova_upozorenja:
-        print(f"\n  Šaljem Telegram — {len(nova_upozorenja)} upozorenje(a)...")
+        print(f"Saljem Telegram: {len(nova_upozorenja)} upozorenje(a)")
         posalji_telegram(nova_upozorenja)
     else:
-        print("\n  Nema novih upozorenja.")
+        print("Nema novih upozorenja.")
 
     spremi_poslano(poslano)
-    print(f"\n  Gotovo — {datetime.now().strftime('%H:%M:%S')}")
-    print(f"{'='*55}\n")
+    print(f"Gotovo: {datetime.now().strftime('%H:%M:%S')}")
 
-
-# ─────────────────────────────────────────────
-#  POKRETANJE
-#
-#  Normalno pokretanje:
-#      python stock_alert_telegram.py
-#
-#  Samo test Telegrama (bez provjere cijena):
-#      python stock_alert_telegram.py test
-# ─────────────────────────────────────────────
 
 if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1 and sys.argv[1] == "test":
-        print("\n  Šaljem test poruku na Telegram...")
         test_telegram()
     else:
         provjeri()
