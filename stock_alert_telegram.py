@@ -4,117 +4,33 @@ import json
 import os
 from datetime import datetime
 
-# KONFIGURACIJA
-import os
 FMP_API_KEY      = os.environ.get("FMP_API_KEY", "")
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 PRAG_POSTO = 0.5
 
-# LISTA DIONICA — samo US tržište
 DIONICE = [
-    {
-        "ticker":   "TDG",
-        "naziv":    "TransDigm Group",
-        "razina":   1350.00,
-        "tip":      "iznad",
-        "napomena": "ATH zona",
-    },
-    {
-        "ticker":   "TDG",
-        "naziv":    "TransDigm Group",
-        "razina":   1100.00,
-        "tip":      "ispod",
-        "napomena": "Stop-loss razina",
-    },
-    {
-        "ticker":   "NTDOY",
-        "naziv":    "Nintendo ADR",
-        "razina":   14.50,
-        "tip":      "iznad",
-        "napomena": "Switch 2 momentum",
-    },
-    {
-        "ticker":   "NTDOY",
-        "naziv":    "Nintendo ADR",
-        "razina":   9.50,
-        "tip":      "ispod",
-        "napomena": "Dodaj poziciju",
-    },
-    {
-        "ticker":   "AN",
-        "naziv":    "AutoNation",
-        "razina":   210.00,
-        "tip":      "iznad",
-        "napomena": "Ciklicni vrhunac zona",
-    },
-    {
-        "ticker":   "AN",
-        "naziv":    "AutoNation",
-        "razina":   155.00,
-        "tip":      "ispod",
-        "napomena": "Jaka podrska",
-    },
-    {
-        "ticker":   "CHTR",
-        "naziv":    "Charter Communications",
-        "razina":   250.00,
-        "tip":      "iznad",
-        "napomena": "FCF infleksija bull case",
-    },
-    {
-        "ticker":   "CHTR",
-        "naziv":    "Charter Communications",
-        "razina":   140.00,
-        "tip":      "ispod",
-        "napomena": "Bear scenarij",
-    },
-    {
-        "ticker":   "BRK-B",
-        "naziv":    "Berkshire Hathaway B",
-        "razina":   480.00,
-        "tip":      "iznad",
-        "napomena": "Novo 52-tjedno visoko",
-    },
-    {
-        "ticker":   "BRK-B",
-        "naziv":    "Berkshire Hathaway B",
-        "razina":   420.00,
-        "tip":      "ispod",
-        "napomena": "Podrska",
-    },
-    {
-        "ticker":   "META",
-        "naziv":    "Meta Platforms",
-        "razina":   620.00,
-        "tip":      "iznad",
-        "napomena": "ATH zona",
-    },
-    {
-        "ticker":   "META",
-        "naziv":    "Meta Platforms",
-        "razina":   550.00,
-        "tip":      "ispod",
-        "napomena": "Promatraj reakciju",
-    },
-    {
-        "ticker":   "NVR",
-        "naziv":    "NVR Inc.",
-        "razina":   8500.00,
-        "tip":      "iznad",
-        "napomena": "Stanogradnja tailwind",
-    },
-    {
-        "ticker":   "NVR",
-        "naziv":    "NVR Inc.",
-        "razina":   7000.00,
-        "tip":      "ispod",
-        "napomena": "Podrska",
-    },
+    {"ticker": "VRSN",  "razina": 310.00},
+    {"ticker": "VRNS",  "razina": 36.00},
+    {"ticker": "GLNG",  "razina": 57.80},
+    {"ticker": "LMT",   "razina": 530.00},
+    {"ticker": "APH",   "razina": 118.00},
+    {"ticker": "ADP",   "razina": 226.20},
+    {"ticker": "AVGO",  "razina": 440.50},
+    {"ticker": "DOCN",  "razina": 165.00},
+    {"ticker": "NNN",   "razina": 45.80},
+    {"ticker": "JNJ",   "razina": 232.00},
+    {"ticker": "AAPL",  "razina": 303.00},
+    {"ticker": "TTE",   "razina": 94.20},
+    {"ticker": "MS",    "razina": 189.60},
+    {"ticker": "WMT",   "razina": 135.00},
+    {"ticker": "KO",    "razina": 82.00},
+    {"ticker": "LRCX",  "razina": 302.00},
+    {"ticker": "HEI",   "razina": 301.00},
+    {"ticker": "SMCI",  "razina": 36.00},
 ]
 
-# PAMCENJE POSLANIH
 POSLANO_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "stock_alert_poslano.json"
@@ -130,10 +46,6 @@ def spremi_poslano(poslano):
     with open(POSLANO_FILE, "w") as f:
         json.dump(poslano, f, indent=2, ensure_ascii=False)
 
-def kljuc(ticker, razina, tip):
-    return f"{ticker}_{razina}_{tip}"
-
-# FMP DOHVAT CIJENE
 def dohvati_cijenu(ticker):
     url = (f"https://financialmodelingprep.com/stable/quote"
            f"?symbol={ticker}&apikey={FMP_API_KEY}")
@@ -149,29 +61,15 @@ def dohvati_cijenu(ticker):
         print(f"Greska {ticker}: {e}")
         return None
 
-# TELEGRAM
 def posalji_telegram(upozorenja):
     if not upozorenja:
         return False
 
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
-    broj = len(upozorenja)
-
-    poruka = f"*STOCK ALERT* {now}\n"
-    poruka += f"_{broj} signal{'a' if broj > 1 else ''}_\n\n"
+    poruka = f"*STOCK ALERT* {now}\n\n"
 
     for u in upozorenja:
-        je_gore   = u["tip"] == "iznad"
-        ikona     = "\U0001f7e2" if je_gore else "\U0001f534"
-        smjer     = "PROBIO GORE" if je_gore else "PALO ISPOD"
-        posto_str = f"+{u['posto']:.2f}%" if je_gore else f"{u['posto']:.2f}%"
-
-        poruka += f"{ikona} *{u['ticker']}*\n"
-        poruka += f"Cijena: `{u['cijena']:.2f} USD`\n"
-        poruka += f"{smjer} razine `{u['razina']:.2f}` ({posto_str})\n"
-        poruka += f"_{u['napomena']}_\n\n"
-
-    poruka += "_Provjeri graf._"
+        poruka += f"*{u['ticker']}*   `{u['cijena']:.2f} USD`\n"
 
     params = urllib.parse.urlencode({
         "chat_id":    TELEGRAM_CHAT_ID,
@@ -214,71 +112,47 @@ def test_telegram():
     except Exception as e:
         print(f"Greska: {e}")
 
-# GLAVNA LOGIKA
 def provjeri():
     print(f"Provjera: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
-    print(f"Prag: {PRAG_POSTO}%")
 
     poslano         = ucitaj_poslano()
     nova_upozorenja = []
 
-    unique = {}
     for d in DIONICE:
-        if d["ticker"] not in unique:
-            unique[d["ticker"]] = None
+        ticker = d["ticker"]
+        razina = d["razina"]
+        k      = f"{ticker}_{razina}"
 
-    print("Dohvacam cijene...")
-    for ticker in unique:
         cijena = dohvati_cijenu(ticker)
-        unique[ticker] = cijena
-        status = f"{cijena:.4f}" if cijena else "nije dostupno"
-        print(f"  {ticker:<16} {status}")
-
-    for d in DIONICE:
-        ticker   = d["ticker"]
-        razina   = d["razina"]
-        tip      = d["tip"]
-        cijena   = unique.get(ticker)
-
         if cijena is None:
+            print(f"  {ticker:<8} nije dostupno")
             continue
 
-        k           = kljuc(ticker, razina, tip)
+        print(f"  {ticker:<8} {cijena:.4f}")
+
         posto_odmak = ((cijena - razina) / razina) * 100
+        probilo     = cijena > razina and posto_odmak >= PRAG_POSTO
 
-        probito = (
-            tip == "iznad" and cijena > razina and posto_odmak >= PRAG_POSTO
-        ) or (
-            tip == "ispod" and cijena < razina and abs(posto_odmak) >= PRAG_POSTO
-        )
-
-        if probito:
+        if probilo:
             if k not in poslano:
-                smjer = "gore" if tip == "iznad" else "dolje"
-                print(f"ALARM {ticker}: razina {razina:.2f} probita {smjer} ({posto_odmak:+.2f}%)")
+                print(f"  ALARM {ticker}: {cijena:.2f} probilo {razina:.2f} ({posto_odmak:+.2f}%)")
                 nova_upozorenja.append({
-                    "ticker":   ticker,
-                    "naziv":    d["naziv"],
-                    "cijena":   cijena,
-                    "razina":   razina,
-                    "tip":      tip,
-                    "napomena": d["napomena"],
-                    "posto":    posto_odmak,
+                    "ticker": ticker,
+                    "cijena": cijena,
                 })
                 poslano[k] = {
                     "poslano_u":         datetime.now().isoformat(),
                     "cijena_u_trenutku": cijena,
-                    "odmak_posto":       round(posto_odmak, 4),
                 }
             else:
-                print(f"Vec poslano: {ticker} razina {razina:.2f}")
+                print(f"  Vec poslano: {ticker}")
         else:
             if k in poslano:
-                print(f"Reset: {ticker} razina {razina:.2f}")
+                print(f"  Reset: {ticker}")
                 del poslano[k]
 
     if nova_upozorenja:
-        print(f"Saljem Telegram: {len(nova_upozorenja)} upozorenje(a)")
+        print(f"Saljem Telegram: {len(nova_upozorenja)} alarm(a)")
         posalji_telegram(nova_upozorenja)
     else:
         print("Nema novih upozorenja.")
