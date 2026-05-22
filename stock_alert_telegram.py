@@ -28,7 +28,14 @@ DIONICE = [
     {"ticker": "KO",    "razina": 82.00},
     {"ticker": "LRCX",  "razina": 302.00},
     {"ticker": "HEI",   "razina": 301.00},
-    {"ticker": "SMCI",  "razina": 36.00},
+    {"ticker": "WELL",  "razina": 222.00},
+    {"ticker": "GEHC",  "razina": 64.80},
+    {"ticker": "APLD",  "razina": 47.80},
+    {"ticker": "LRCX",  "razina": 302.00},
+    {"ticker": "H",  "razina": 177.50},
+    {"ticker": "KLAR",  "razina": 16.80},
+    {"ticker": "CSCO",  "razina": 119.50},
+    {"ticker": "NVTS",  "razina": 24.20},
 ]
 
 POSLANO_FILE = os.path.join(
