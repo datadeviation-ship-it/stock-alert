@@ -36,6 +36,10 @@ DIONICE = [
     {"ticker": "KLAR",  "razina": 16.80},
     {"ticker": "CSCO",  "razina": 119.50},
     {"ticker": "NVTS",  "razina": 24.20},
+    {"ticker": "AGX",  "razina": 743.00},
+    {"ticker": "STM",  "razina": 67.00},
+    {"ticker": "RDW",  "razina": 15.50},
+    {"ticker": "GRRR",  "razina": 15.80},
 ]
 
 POSLANO_FILE = os.path.join(
