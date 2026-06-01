@@ -346,9 +346,9 @@ def provjeri():
         if not open_ and today_s in historija:
             open_ = historija[today_s]["open"]
 
-        print(f"  {ticker:<8}  razina={razina:.2f}  "
-              f"price={price:.2f if price else '—'}  "
-              f"open={open_:.2f if open_ else '—'}", end="")
+        price_s = f"{price:.2f}" if price is not None else "—"
+        open_s  = f"{open_:.2f}"  if open_  is not None else "—"
+        print(f"  {ticker:<8}  razina={razina:.2f}  price={price_s}  open={open_s}", end="")
 
         k1 = f"{ticker}_{razina}_g1"
         k2 = f"{ticker}_{razina}_g2"
