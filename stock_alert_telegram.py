@@ -333,116 +333,100 @@ def provjeri():
     for d in DIONICE:
         ticker = d["ticker"]
         razina = d["razina"]
+        try:
+            historija = dohvati_ohlc_historiju(ticker, days=HISTORY_DAYS + 5)
+            quote     = dohvati_quote(ticker) if burza_otvorena else None
 
-        # Dohvati OHLC historiju i trenutni quote paralelno
-        historija = dohvati_ohlc_historiju(ticker, days=HISTORY_DAYS + 5)
-        quote     = dohvati_quote(ticker) if burza_otvorena else None
+            price = quote["price"] if quote else None
+            open_ = quote["open"]  if quote else None
 
-        price = quote["price"] if quote else None
-        open_ = quote["open"]  if quote else None
+            if not open_ and today_s in historija:
+                open_ = historija[today_s]["open"]
 
-        # Ako burza nije otvorena ali imamo OHLC, uzmi open iz historije za danas
-        # (ili ako je quote dostupan, koristi taj open)
-        if not open_ and today_s in historija:
-            open_ = historija[today_s]["open"]
+            price_s = f"{price:.2f}" if price is not None else "—"
+            open_s  = f"{open_:.2f}" if open_  is not None else "—"
+            print(f"  {ticker:<8}  razina={razina:.2f}  price={price_s}  open={open_s}", end="")
 
-        price_s = f"{price:.2f}" if price is not None else "—"
-        open_s  = f"{open_:.2f}"  if open_  is not None else "—"
-        print(f"  {ticker:<8}  razina={razina:.2f}  price={price_s}  open={open_s}", end="")
+            k1 = f"{ticker}_{razina}_g1"
+            k2 = f"{ticker}_{razina}_g2"
+            k3 = f"{ticker}_{razina}_g3"
 
-        k1 = f"{ticker}_{razina}_g1"
-        k2 = f"{ticker}_{razina}_g2"
-        k3 = f"{ticker}_{razina}_g3"
+            # ── G1: Intraday proboj ───────────────────────────────
+            if burza_otvorena and price is not None:
+                if price >= razina * prag:
+                    prev_g1 = poslano.get(k1, {})
+                    if prev_g1.get("datum") != today_s:
+                        odmak = (price - razina) / razina * 100
+                        print(f"\n    G1: {price:.2f} (+{odmak:.1f}%)", end="")
+                        grupa1.append({"ticker": ticker, "cijena": price, "razina": razina})
+                        poslano[k1] = {"datum": today_s, "cijena": price,
+                                       "poslano": now_et.isoformat()}
+                else:
+                    if k1 in poslano and poslano[k1].get("datum") != today_s:
+                        del poslano[k1]
 
-        # ── G1: Intraday proboj ───────────────────────────────────
-        if burza_otvorena and price is not None:
-            if price >= razina * prag:
-                prev_g1 = poslano.get(k1, {})
-                if prev_g1.get("datum") != today_s:
-                    odmak = (price - razina) / razina * 100
-                    print(f"\n    G1: {price:.2f} (+{odmak:.1f}%)", end="")
-                    grupa1.append({"ticker": ticker, "cijena": price, "razina": razina})
-                    poslano[k1] = {"datum": today_s, "cijena": price,
-                                   "poslano": now_et.isoformat()}
-            else:
-                if k1 in poslano and poslano[k1].get("datum") != today_s:
-                    del poslano[k1]
+            # ── G2: Prođi kroz sve historical dane ───────────────
+            sent_g2_dates = set(poslano.get(k2, {}).get("datumi", []))
 
-        # ── G2: Prođi kroz sve historical dane i traži close >= razine ──
-        # Šalje alarm samo jednom po datumu zatvaranja
-        sent_g2_dates = set(poslano.get(k2, {}).get("datumi", []))
+            for td in hist_days:
+                td_s = td.isoformat()
+                if td_s in sent_g2_dates:
+                    continue
+                ohlc = historija.get(td_s)
+                if not ohlc:
+                    continue
+                close = ohlc["close"]
+                if close >= razina * prag:
+                    odmak = (close - razina) / razina * 100
+                    print(f"\n    G2: close={close:.2f} datum={td_s} (+{odmak:.1f}%)", end="")
+                    grupa2.append({"ticker": ticker, "close": close,
+                                   "razina": razina, "datum": td_s})
+                    sent_g2_dates.add(td_s)
 
-        for td in hist_days:
-            td_s = td.isoformat()
-            if td_s in sent_g2_dates:
-                continue  # ovaj dan je već obrađen
+            if sent_g2_dates:
+                poslano[k2] = {"datumi": sorted(sent_g2_dates)[-HISTORY_DAYS:]}
+            elif k2 in poslano:
+                del poslano[k2]
 
-            ohlc = historija.get(td_s)
-            if not ohlc:
-                continue
+            # ── G3: Dan nakon G2 — open >= razine ────────────────
+            if burza_otvorila:
+                sent_g3_dates = set(poslano.get(k3, {}).get("datumi", []))
+                g2_datumi     = sorted(poslano.get(k2, {}).get("datumi", []))
 
-            close = ohlc["close"]
-            if close >= razina * prag:
-                odmak = (close - razina) / razina * 100
-                print(f"\n    G2: close={close:.2f} datum={td_s} (+{odmak:.1f}%)", end="")
-                grupa2.append({"ticker": ticker, "close": close,
-                               "razina": razina, "datum": td_s})
-                sent_g2_dates.add(td_s)
+                for g2_datum_s in g2_datumi:
+                    g2_datum  = date.fromisoformat(g2_datum_s)
+                    next_td   = next_trading_day(g2_datum)
+                    next_td_s = next_td.isoformat()
 
-        # Ažuriraj listu G2 datuma u stanju
-        if sent_g2_dates:
-            # Zadrži samo HISTORY_DAYS najnovijih
-            sorted_dates = sorted(sent_g2_dates)[-HISTORY_DAYS:]
-            poslano[k2] = {"datumi": sorted_dates}
-        elif k2 in poslano:
-            del poslano[k2]
+                    if next_td_s in sent_g3_dates:
+                        continue
+                    if next_td > today:
+                        continue
 
-        # ── G3: Dan nakon G2 close — open >= razine ──────────────
-        # Za svaki G2 datum, provjeri je li idući trading dan otvorilo iznad razine
-        if not burza_otvorila:
+                    if next_td == today:
+                        open_next = open_
+                    else:
+                        ohlc_next = historija.get(next_td_s)
+                        open_next = ohlc_next["open"] if ohlc_next else None
+
+                    if open_next is None:
+                        continue
+
+                    if open_next >= razina * prag:
+                        odmak = (open_next - razina) / razina * 100
+                        print(f"\n    G3: open={open_next:.2f} datum={next_td_s} "
+                              f"(G2={g2_datum_s}) (+{odmak:.1f}%)", end="")
+                        grupa3.append({"ticker": ticker, "open": open_next,
+                                       "razina": razina, "datum": next_td_s})
+                        sent_g3_dates.add(next_td_s)
+
+                if sent_g3_dates:
+                    poslano[k3] = {"datumi": sorted(sent_g3_dates)[-HISTORY_DAYS:]}
+
             print()
-            continue
 
-        sent_g3_dates = set(poslano.get(k3, {}).get("datumi", []))
-        g2_datumi     = sorted(poslano.get(k2, {}).get("datumi", []))
-
-        for g2_datum_s in g2_datumi:
-            g2_datum  = date.fromisoformat(g2_datum_s)
-            next_td   = next_trading_day(g2_datum)
-            next_td_s = next_td.isoformat()
-
-            if next_td_s in sent_g3_dates:
-                continue  # već poslano
-
-            # Provjeri samo ako je idući trading dan <= danas
-            if next_td > today:
-                continue
-
-            # Dohvati open za next_td
-            if next_td == today:
-                # Danas — koristi live open
-                open_next = open_
-            else:
-                # Prošli dan — iz historije
-                ohlc_next = historija.get(next_td_s)
-                open_next = ohlc_next["open"] if ohlc_next else None
-
-            if open_next is None:
-                continue
-
-            if open_next >= razina * prag:
-                odmak = (open_next - razina) / razina * 100
-                print(f"\n    G3: open={open_next:.2f} datum={next_td_s} "
-                      f"(G2 close={g2_datum_s}) (+{odmak:.1f}%)", end="")
-                grupa3.append({"ticker": ticker, "open": open_next,
-                               "razina": razina, "datum": next_td_s})
-                sent_g3_dates.add(next_td_s)
-
-        if sent_g3_dates:
-            sorted_g3 = sorted(sent_g3_dates)[-HISTORY_DAYS:]
-            poslano[k3] = {"datumi": sorted_g3}
-
-        print()  # novi red
+        except Exception as e:
+            print(f"\n  GRESKA {ticker}: {e}")
 
     # ── Pošalji ───────────────────────────────────────────────────
     ukupno = len(grupa1) + len(grupa2) + len(grupa3)
