@@ -1,26 +1,29 @@
 """
-stock_alert.py — Stock price alert v6
+stock_alert.py — Stock alert v7
 
-LOGIKA ALARMA:
+LOGIKA:
 
 G1 — PROBOJ RAZINE
-Dionica je tijekom dana, dok je burza otvorena, došla iznad:
-    razina * (1 + PRAG_POSTO / 100)
+Dionica je tijekom dana probila zadanu razinu.
+Za završene dane koristi se dnevni HIGH.
+Za današnji dan, dok je burza otvorena, koristi se live PRICE.
 
 G2 — PROBOJ + CLOSE IZNAD RAZINE
-Dionica je imala evidentiran G1 proboj i taj isti trading dan
-zatvorila je iznad:
-    razina * (1 + PRAG_POSTO / 100)
+Dionica je tijekom dana probila razinu i zatvorila iznad nje.
+Uvjet:
+    high >= razina * (1 + PRAG_POSTO / 100)
+    close >= razina * (1 + PRAG_POSTO / 100)
 
-G3 — G1 + G2 + IDUĆI OPEN IZNAD RAZINE
-Dionica je ispunila G1 i G2, a idući trading dan otvorila je iznad:
-    razina * (1 + PRAG_POSTO / 100)
+G3 — PROBOJ + CLOSE + IDUĆI OPEN IZNAD RAZINE
+Dionica je ispunila G2, a idući trading dan otvorila iznad razine.
+Uvjet:
+    next_open >= razina * (1 + PRAG_POSTO / 100)
 
 Pokretanje:
-  python stock_alert.py           — normalna provjera
-  python stock_alert.py test      — test Telegram poruka
-  python stock_alert.py reset     — briše stock_alert_poslano.json
-  python stock_alert.py debug     — provjera ENV varijabli
+  python stock_alert.py
+  python stock_alert.py test
+  python stock_alert.py reset
+  python stock_alert.py debug
 """
 
 import urllib.request
@@ -31,18 +34,18 @@ from datetime import datetime, date, timedelta
 import zoneinfo
 
 
-# ─────────────────────────────────────────────────────────────────────
-# ENV VARIJABLE
-# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# ENV
+# ─────────────────────────────────────────────────────────────
 
 FMP_API_KEY = os.environ.get("FMP_API_KEY", "").strip()
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
 
-# ─────────────────────────────────────────────────────────────────────
-# POSTAVKE
-# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# SETTINGS
+# ─────────────────────────────────────────────────────────────
 
 PRAG_POSTO = 0.5
 HISTORY_DAYS = 15
@@ -55,9 +58,9 @@ POSLANO_FILE = os.path.join(
 )
 
 
-# ─────────────────────────────────────────────────────────────────────
-# LISTA DIONICA
-# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# DIONICE
+# ─────────────────────────────────────────────────────────────
 
 DIONICE = [
     {"ticker": "VRSN",  "razina": 310.00},
@@ -112,22 +115,22 @@ DIONICE = [
 ]
 
 
-# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # DEBUG
-# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 
 def debug_env():
     print("ENV provjera:")
     print(f"  FMP_API_KEY exists:      {bool(FMP_API_KEY)}")
     print(f"  TELEGRAM_TOKEN exists:   {bool(TELEGRAM_TOKEN)}")
     print(f"  TELEGRAM_CHAT_ID exists: {bool(TELEGRAM_CHAT_ID)}")
-    print("  Tokeni se ne ispisuju zbog sigurnosti.")
+    print("  Stvarne vrijednosti tokena se ne ispisuju.")
     print()
 
 
-# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # TRADING CALENDAR
-# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 
 def _nth_weekday(year, month, weekday, n):
     d = date(year, month, 1)
@@ -179,6 +182,7 @@ def us_holidays(year):
     m = (a + 11 * hh + 22 * l) // 451
     mo = (hh + l - 7 * m + 114) // 31
     dy = (hh + l - 7 * m + 114) % 31 + 1
+
     h.add(date(year, mo, dy) - timedelta(days=2))
 
     h.add(_last_weekday(year, 5, 0))
@@ -200,15 +204,6 @@ def next_trading_day(d):
 
     while not is_trading_day(d):
         d += timedelta(days=1)
-
-    return d
-
-
-def previous_trading_day(d):
-    d -= timedelta(days=1)
-
-    while not is_trading_day(d):
-        d -= timedelta(days=1)
 
     return d
 
@@ -236,9 +231,9 @@ def burza_je_otvorena():
     )
 
 
-# ─────────────────────────────────────────────────────────────────────
-# JSON STATE
-# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# STATE
+# ─────────────────────────────────────────────────────────────
 
 def default_state():
     return {
@@ -266,7 +261,7 @@ def ucitaj_poslano():
         return data
 
     except Exception as e:
-        print(f"Upozorenje: ne mogu učitati {POSLANO_FILE}: {e}")
+        print(f"Ne mogu učitati state file: {e}")
         return default_state()
 
 
@@ -279,15 +274,11 @@ def key_for(ticker, razina):
     return f"{ticker}_{razina:.4f}"
 
 
-# ─────────────────────────────────────────────────────────────────────
-# FMP API
-# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# FMP
+# ─────────────────────────────────────────────────────────────
 
 def dohvati_quote(ticker):
-    if not FMP_API_KEY:
-        print("  FMP_API_KEY nije postavljen.")
-        return None
-
     url = (
         "https://financialmodelingprep.com/stable/quote"
         f"?symbol={ticker}&apikey={FMP_API_KEY}"
@@ -296,38 +287,31 @@ def dohvati_quote(ticker):
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
 
-        with urllib.request.urlopen(req, timeout=20) as r:
-            raw = r.read().decode("utf-8", errors="replace")
-            data = json.loads(raw)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read())
 
-        if not data or not isinstance(data, list):
-            print(f"  quote nema podatke {ticker}: {data}")
-            return None
+        if data and isinstance(data, list):
+            q = data[0]
 
-        q = data[0]
+            price = q.get("price")
+            open_ = q.get("open")
 
-        price = q.get("price")
-        open_ = q.get("open")
+            if price is None:
+                return None
 
-        if price is None:
-            print(f"  quote nema price {ticker}: {q}")
-            return None
+            return {
+                "price": round(float(price), 4),
+                "open": round(float(open_ or 0), 4),
+            }
 
-        return {
-            "price": round(float(price), 4),
-            "open": round(float(open_ or 0), 4),
-        }
+        return None
 
     except Exception as e:
-        print(f"  quote greska {ticker}: {repr(e)}")
+        print(f"  quote greska {ticker}: {e}")
         return None
 
 
 def dohvati_historiju(ticker):
-    if not FMP_API_KEY:
-        print("  FMP_API_KEY nije postavljen.")
-        return {}
-
     start = datetime.now(ET).date() - timedelta(days=HISTORY_DAYS * 4)
 
     url = (
@@ -338,16 +322,14 @@ def dohvati_historiju(ticker):
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
 
-        with urllib.request.urlopen(req, timeout=25) as r:
-            raw = r.read().decode("utf-8", errors="replace")
-            data = json.loads(raw)
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read())
 
         if isinstance(data, dict):
-            records = data.get("historical", [])
+            records = data.get("historical", data.get("data", []))
         elif isinstance(data, list):
             records = data
         else:
-            print(f"  historija neočekivan format {ticker}: {type(data)}")
             return {}
 
         result = {}
@@ -368,13 +350,13 @@ def dohvati_historiju(ticker):
         return result
 
     except Exception as e:
-        print(f"  historija greska {ticker}: {repr(e)}")
+        print(f"  historija greska {ticker}: {e}")
         return {}
 
 
-# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # TELEGRAM
-# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 
 def posalji_telegram_poruku(text):
     if not TELEGRAM_TOKEN:
@@ -385,71 +367,66 @@ def posalji_telegram_poruku(text):
         print("Telegram greska: TELEGRAM_CHAT_ID nije postavljen.")
         return False
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
     params = urllib.parse.urlencode({
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
-        "disable_web_page_preview": "true",
+        "parse_mode": "Markdown",
     }).encode("utf-8")
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
     try:
         req = urllib.request.Request(url, data=params, method="POST")
 
-        with urllib.request.urlopen(req, timeout=20) as r:
-            raw = r.read().decode("utf-8", errors="replace")
-            resp = json.loads(raw)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            odgovor = json.loads(r.read())
 
-        print(f"Telegram response: {resp}")
-
-        if resp.get("ok"):
-            print("Telegram OK.")
+        if odgovor.get("ok"):
+            print("Telegram poruka poslana.")
             return True
 
-        print(f"Telegram greska: {resp}")
+        print(f"Telegram greska: {odgovor}")
         return False
 
     except Exception as e:
-        print(f"Telegram exception: {repr(e)}")
+        print(f"Telegram greska: {e}")
         return False
 
 
-def format_alert_message(g1, g2, g3):
+def format_alert(g1, g2, g3):
     now = datetime.now(ET).strftime("%d.%m.%Y %H:%M ET")
-    poruka = f"STOCK ALERT — {now}\n"
+
+    poruka = f"*STOCK ALERT* {now}\n"
 
     if g1:
-        poruka += "\n1) PROBOJ RAZINE\n"
-        poruka += "Dionice koje su tijekom dana probile zadanu razinu:\n"
-
+        poruka += "\n*1) PROBOJ RAZINE*\n"
         for u in g1:
-            odmak = (u["price"] - u["razina"]) / u["razina"] * 100
+            odmak = (u["vrijednost"] - u["razina"]) / u["razina"] * 100
             poruka += (
-                f"{u['ticker']} | price {u['price']:.2f} | "
-                f"razina {u['razina']:.2f} | {u['datum']} | {odmak:+.2f}%\n"
+                f"*{u['ticker']}* `{u['vrijednost']:.2f}` "
+                f"razina `{u['razina']:.2f}` "
+                f"{u['datum']} ({odmak:+.2f}%)\n"
             )
 
     if g2:
-        poruka += "\n2) PROBOJ + CLOSE IZNAD RAZINE\n"
-        poruka += "Dionice koje su probile razinu i zatvorile dan iznad nje:\n"
-
+        poruka += "\n*2) PROBOJ + CLOSE IZNAD*\n"
         for u in g2:
             odmak = (u["close"] - u["razina"]) / u["razina"] * 100
             poruka += (
-                f"{u['ticker']} | close {u['close']:.2f} | "
-                f"razina {u['razina']:.2f} | {u['datum']} | {odmak:+.2f}%\n"
+                f"*{u['ticker']}* close `{u['close']:.2f}` "
+                f"high `{u['high']:.2f}` "
+                f"razina `{u['razina']:.2f}` "
+                f"{u['datum']} ({odmak:+.2f}%)\n"
             )
 
     if g3:
-        poruka += "\n3) PROBOJ + CLOSE + IDUĆI OPEN IZNAD RAZINE\n"
-        poruka += "Dionice koje su ispunile prva dva uvjeta i idući dan otvorile iznad razine:\n"
-
+        poruka += "\n*3) IDUĆI OPEN IZNAD*\n"
         for u in g3:
             odmak = (u["open"] - u["razina"]) / u["razina"] * 100
             poruka += (
-                f"{u['ticker']} | open {u['open']:.2f} | "
-                f"razina {u['razina']:.2f} | open datum {u['datum']} | "
-                f"G2 datum {u['g2_datum']} | {odmak:+.2f}%\n"
+                f"*{u['ticker']}* open `{u['open']:.2f}` "
+                f"razina `{u['razina']:.2f}` "
+                f"{u['datum']} nakon {u['g2_datum']} ({odmak:+.2f}%)\n"
             )
 
     return poruka
@@ -459,48 +436,24 @@ def posalji_telegram(g1, g2, g3):
     if not (g1 or g2 or g3):
         return False
 
-    text = format_alert_message(g1, g2, g3)
-    return posalji_telegram_poruku(text)
+    poruka = format_alert(g1, g2, g3)
+    return posalji_telegram_poruku(poruka)
 
 
 def test_telegram():
     now = datetime.now(ET).strftime("%d.%m.%Y %H:%M ET")
-    text = f"Stock Alert bot aktivan — test {now}"
+    text = f"*Stock Alert bot aktivan*\nTest poruka {now}"
     ok = posalji_telegram_poruku(text)
 
     if ok:
-        print("Test Telegram poruka poslana.")
+        print("Test poruka poslana.")
     else:
-        print("Test Telegram poruka NIJE poslana.")
+        print("Test poruka NIJE poslana.")
 
 
-# ─────────────────────────────────────────────────────────────────────
-# DUPLIKATI
-# ─────────────────────────────────────────────────────────────────────
-
-def provjeri_duplikate():
-    seen = {}
-    duplicates = []
-
-    for d in DIONICE:
-        ticker = d["ticker"]
-        razina = float(d["razina"])
-
-        if ticker in seen:
-            duplicates.append((ticker, seen[ticker], razina))
-        else:
-            seen[ticker] = razina
-
-    if duplicates:
-        print("UPOZORENJE: imaš duplikate tickera:")
-        for ticker, old_level, new_level in duplicates:
-            print(f"  {ticker}: {old_level} i {new_level}")
-        print()
-
-
-# ─────────────────────────────────────────────────────────────────────
-# GLAVNA PROVJERA
-# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# GLAVNA LOGIKA
+# ─────────────────────────────────────────────────────────────
 
 def provjeri():
     now_et = datetime.now(ET)
@@ -509,24 +462,23 @@ def provjeri():
 
     print(f"Provjera: {now_et.strftime('%d.%m.%Y %H:%M:%S ET')}")
     print(f"State file: {POSLANO_FILE}")
-    print()
-
     debug_env()
-    provjeri_duplikate()
+
+    if not FMP_API_KEY:
+        print("FMP_API_KEY nije postavljen. Prekid.")
+        return
 
     otvorena = burza_je_otvorena()
-    prag = 1 + PRAG_POSTO / 100
-
     hist_days = last_n_trading_days(HISTORY_DAYS, today)
+    prag = 1 + PRAG_POSTO / 100
 
     print(
         f"Burza otvorena: {'DA' if otvorena else 'NE'} | "
-        f"Zadnji završeni trading dani: {hist_days[0]} — {hist_days[-1]}"
+        f"History window: {hist_days[0]} — {hist_days[-1]}"
     )
     print()
 
     state = ucitaj_poslano()
-    novo_state = json.loads(json.dumps(state))
 
     g1_alerts = []
     g2_alerts = []
@@ -538,202 +490,191 @@ def provjeri():
         trigger = razina * prag
         k = key_for(ticker, razina)
 
-        try:
-            hist = dohvati_historiju(ticker)
-            quote = dohvati_quote(ticker) if otvorena else None
+        hist = dohvati_historiju(ticker)
+        quote = dohvati_quote(ticker) if otvorena else None
 
-            price = quote["price"] if quote else None
+        price = quote["price"] if quote else None
+        open_danas = quote["open"] if quote and quote.get("open") else hist.get(today_s, {}).get("open")
 
-            if quote and quote.get("open"):
-                open_danas = quote["open"]
+        price_s = f"{price:.2f}" if price is not None else "—"
+        open_s = f"{open_danas:.2f}" if open_danas is not None else "—"
+
+        print(
+            f"{ticker:<8} razina={razina:.2f} trigger={trigger:.2f} "
+            f"price={price_s} open={open_s}"
+        )
+
+        state["g1"].setdefault(k, {
+            "ticker": ticker,
+            "razina": razina,
+            "datumi": [],
+        })
+
+        state["g2"].setdefault(k, {
+            "ticker": ticker,
+            "razina": razina,
+            "datumi": [],
+        })
+
+        state["g3"].setdefault(k, {
+            "ticker": ticker,
+            "razina": razina,
+            "datumi": [],
+        })
+
+        g1_dates = set(state["g1"][k].get("datumi", []))
+        g2_dates = set(state["g2"][k].get("datumi", []))
+        g3_dates = set(state["g3"][k].get("datumi", []))
+
+        # ─────────────────────────────────────
+        # G1 — završeni dani: high >= trigger
+        # ─────────────────────────────────────
+
+        for td in hist_days:
+            td_s = td.isoformat()
+
+            if td_s in g1_dates:
+                continue
+
+            ohlc = hist.get(td_s)
+
+            if not ohlc:
+                continue
+
+            high_val = ohlc.get("high")
+
+            if high_val is None:
+                continue
+
+            if high_val >= trigger:
+                g1_alerts.append({
+                    "ticker": ticker,
+                    "vrijednost": high_val,
+                    "razina": razina,
+                    "datum": td_s,
+                })
+
+                g1_dates.add(td_s)
+
+                print(f"  G1: high {high_val:.2f} na {td_s}")
+
+        # ─────────────────────────────────────
+        # G1 — danas live: price >= trigger
+        # ─────────────────────────────────────
+
+        if otvorena and price is not None:
+            if price >= trigger and today_s not in g1_dates:
+                g1_alerts.append({
+                    "ticker": ticker,
+                    "vrijednost": price,
+                    "razina": razina,
+                    "datum": today_s,
+                })
+
+                g1_dates.add(today_s)
+
+                print(f"  G1 LIVE: price {price:.2f} danas")
+
+        state["g1"][k]["datumi"] = sorted(g1_dates)[-HISTORY_DAYS:]
+
+        # ─────────────────────────────────────
+        # G2 — high >= trigger i close >= trigger
+        # ─────────────────────────────────────
+
+        for td in hist_days:
+            td_s = td.isoformat()
+
+            if td_s in g2_dates:
+                continue
+
+            ohlc = hist.get(td_s)
+
+            if not ohlc:
+                continue
+
+            high_val = ohlc.get("high")
+            close_val = ohlc.get("close")
+
+            if high_val is None or close_val is None:
+                continue
+
+            if high_val >= trigger and close_val >= trigger:
+                g2_alerts.append({
+                    "ticker": ticker,
+                    "high": high_val,
+                    "close": close_val,
+                    "razina": razina,
+                    "datum": td_s,
+                })
+
+                g2_dates.add(td_s)
+
+                print(f"  G2: high {high_val:.2f}, close {close_val:.2f} na {td_s}")
+
+        state["g2"][k]["datumi"] = sorted(g2_dates)[-HISTORY_DAYS:]
+
+        # ─────────────────────────────────────
+        # G3 — nakon G2, idući trading day open >= trigger
+        # ─────────────────────────────────────
+
+        for g2_d_s in sorted(g2_dates):
+            g2_d = date.fromisoformat(g2_d_s)
+            next_d = next_trading_day(g2_d)
+            next_s = next_d.isoformat()
+
+            if next_s in g3_dates:
+                continue
+
+            if next_d > today:
+                continue
+
+            if next_d == today:
+                open_val = open_danas
             else:
-                open_danas = hist.get(today_s, {}).get("open")
+                open_val = hist.get(next_s, {}).get("open")
 
-            price_s = f"{price:.2f}" if price is not None else "—"
-            open_s = f"{open_danas:.2f}" if open_danas is not None else "—"
+            if open_val is None:
+                continue
 
-            print(
-                f"{ticker:<8} razina={razina:.2f} trigger={trigger:.2f} "
-                f"price={price_s} open={open_s}",
-                end=""
-            )
-
-            # ─────────────────────────────────────────────
-            # G1: live proboj dok je burza otvorena
-            # ─────────────────────────────────────────────
-
-            g1_dates = set(novo_state["g1"].get(k, {}).get("datumi", []))
-
-            if otvorena and price is not None and price >= trigger:
-                if today_s not in g1_dates:
-                    odmak = (price - razina) / razina * 100
-
-                    print(
-                        f"\n    G1: intraday proboj price={price:.2f} "
-                        f"({odmak:+.2f}%)",
-                        end=""
-                    )
-
-                    g1_alerts.append({
-                        "ticker": ticker,
-                        "price": price,
-                        "razina": razina,
-                        "datum": today_s,
-                    })
-
-                    g1_dates.add(today_s)
-
-            if g1_dates:
-                novo_state["g1"][k] = {
+            if open_val >= trigger:
+                g3_alerts.append({
                     "ticker": ticker,
+                    "open": open_val,
                     "razina": razina,
-                    "datumi": sorted(g1_dates)[-HISTORY_DAYS:],
-                }
+                    "datum": next_s,
+                    "g2_datum": g2_d_s,
+                })
 
-            # ─────────────────────────────────────────────
-            # G2: samo ako je taj dan prethodno imao G1
-            #     i close je iznad triggera
-            # ─────────────────────────────────────────────
+                g3_dates.add(next_s)
 
-            g2_dates = set(novo_state["g2"].get(k, {}).get("datumi", []))
-            all_g1_dates = sorted(novo_state["g1"].get(k, {}).get("datumi", []))
+                print(f"  G3: open {open_val:.2f} na {next_s}, nakon G2 {g2_d_s}")
 
-            for g1_d_s in all_g1_dates:
-                if g1_d_s in g2_dates:
-                    continue
-
-                g1_d = date.fromisoformat(g1_d_s)
-
-                # Ne možemo potvrditi close za današnji dan dok dan nije završen.
-                if g1_d >= today:
-                    continue
-
-                ohlc = hist.get(g1_d_s)
-
-                if not ohlc:
-                    continue
-
-                close_val = ohlc.get("close")
-
-                if close_val is None:
-                    continue
-
-                if close_val >= trigger:
-                    odmak = (close_val - razina) / razina * 100
-
-                    print(
-                        f"\n    G2: imao G1 i close={close_val:.2f} "
-                        f"{g1_d_s} ({odmak:+.2f}%)",
-                        end=""
-                    )
-
-                    g2_alerts.append({
-                        "ticker": ticker,
-                        "close": close_val,
-                        "razina": razina,
-                        "datum": g1_d_s,
-                    })
-
-                    g2_dates.add(g1_d_s)
-
-            if g2_dates:
-                novo_state["g2"][k] = {
-                    "ticker": ticker,
-                    "razina": razina,
-                    "datumi": sorted(g2_dates)[-HISTORY_DAYS:],
-                }
-
-            # ─────────────────────────────────────────────
-            # G3: samo ako postoji G2 datum,
-            #     idući trading dan open iznad triggera
-            # ─────────────────────────────────────────────
-
-            g3_dates = set(novo_state["g3"].get(k, {}).get("datumi", []))
-            all_g2_dates = sorted(novo_state["g2"].get(k, {}).get("datumi", []))
-
-            for g2_d_s in all_g2_dates:
-                g2_d = date.fromisoformat(g2_d_s)
-                next_d = next_trading_day(g2_d)
-                next_s = next_d.isoformat()
-
-                if next_s in g3_dates:
-                    continue
-
-                if next_d > today:
-                    continue
-
-                if next_d == today:
-                    open_val = open_danas
-                else:
-                    open_val = hist.get(next_s, {}).get("open")
-
-                if open_val is None:
-                    continue
-
-                if open_val >= trigger:
-                    odmak = (open_val - razina) / razina * 100
-
-                    print(
-                        f"\n    G3: nakon G2={g2_d_s}, open={open_val:.2f} "
-                        f"{next_s} ({odmak:+.2f}%)",
-                        end=""
-                    )
-
-                    g3_alerts.append({
-                        "ticker": ticker,
-                        "open": open_val,
-                        "razina": razina,
-                        "datum": next_s,
-                        "g2_datum": g2_d_s,
-                    })
-
-                    g3_dates.add(next_s)
-
-            if g3_dates:
-                novo_state["g3"][k] = {
-                    "ticker": ticker,
-                    "razina": razina,
-                    "datumi": sorted(g3_dates)[-HISTORY_DAYS:],
-                }
-
-            print()
-
-        except Exception as e:
-            print(f"\nGRESKA {ticker}: {repr(e)}")
+        state["g3"][k]["datumi"] = sorted(g3_dates)[-HISTORY_DAYS:]
 
     ukupno = len(g1_alerts) + len(g2_alerts) + len(g3_alerts)
 
     print()
-    print(
-        f"Rezultat: "
-        f"G1={len(g1_alerts)}, "
-        f"G2={len(g2_alerts)}, "
-        f"G3={len(g3_alerts)}, "
-        f"ukupno={ukupno}"
-    )
+    print(f"Rezultat: G1={len(g1_alerts)}, G2={len(g2_alerts)}, G3={len(g3_alerts)}, ukupno={ukupno}")
 
     if ukupno:
-        print("Šaljem Telegram alert...")
-
+        print(f"Saljem Telegram: {ukupno} alarm(a)")
         telegram_ok = posalji_telegram(g1_alerts, g2_alerts, g3_alerts)
 
         if telegram_ok:
-            spremi_poslano(novo_state)
-            print("State spremljen jer je Telegram uspješno poslan.")
+            spremi_poslano(state)
+            print("State spremljen.")
         else:
-            print("Telegram NIJE poslan.")
-            print("State NIJE spremljen, da se alert ne izgubi.")
+            print("Telegram nije poslan. State nije spremljen.")
     else:
         print("Nema novih upozorenja.")
-        spremi_poslano(novo_state)
-        print("State spremljen bez novih alerta.")
+        spremi_poslano(state)
 
-    print(f"Gotovo: {datetime.now(ET).strftime('%d.%m.%Y %H:%M:%S ET')}")
+    print(f"Gotovo: {datetime.now(ET).strftime('%H:%M:%S ET')}")
 
 
-# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # MAIN
-# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import sys
@@ -748,7 +689,7 @@ if __name__ == "__main__":
             os.remove(POSLANO_FILE)
             print("Resetirano — stock_alert_poslano.json obrisan.")
         else:
-            print("Nema što resetirati — stock_alert_poslano.json ne postoji.")
+            print("Nema što resetirati.")
 
     elif arg == "debug":
         debug_env()
