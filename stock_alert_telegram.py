@@ -57,7 +57,7 @@ DIONICE = [
     {"ticker": "NOW",   "razina": 106.60},
     {"ticker": "KLAC",  "razina": 1940.00},
     {"ticker": "LEA",   "razina": 141.40},
-    {"ticker": "DG",    "razina": 117.60},
+    {"ticker": "DG",    "razina": 6.60},
     {"ticker": "MET",   "razina": 85.30},
     {"ticker": "VRT",   "razina": 334.60},
     {"ticker": "PAYC",  "razina": 139.30},
