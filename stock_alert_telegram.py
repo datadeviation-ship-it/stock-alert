@@ -8,7 +8,7 @@ FMP_API_KEY      = os.environ.get("FMP_API_KEY", "")
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-PRAG_POSTO = 0.5
+PRAG_POSTO = 0.5   # % iznad razine = proboj
 
 DIONICE = [
     {"ticker": "VRSN",  "razina": 310.00},
@@ -67,6 +67,8 @@ POSLANO_FILE = os.path.join(
     "stock_alert_poslano.json"
 )
 
+# ── STANJE ────────────────────────────────────────────────────────
+
 def ucitaj_poslano():
     if os.path.exists(POSLANO_FILE):
         with open(POSLANO_FILE, "r") as f:
@@ -77,30 +79,63 @@ def spremi_poslano(poslano):
     with open(POSLANO_FILE, "w") as f:
         json.dump(poslano, f, indent=2, ensure_ascii=False)
 
-def dohvati_cijenu(ticker):
+# ── PODACI ────────────────────────────────────────────────────────
+
+def dohvati_quote(ticker):
+    """
+    Vraća dict s ključevima:
+      price      — trenutna cijena (intraday)
+      open       — otvaranje danas
+      previousClose — zatvaranje jučer
+    """
     url = (f"https://financialmodelingprep.com/stable/quote"
            f"?symbol={ticker}&apikey={FMP_API_KEY}")
     try:
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "Mozilla/5.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=10) as r:
             data = json.loads(r.read())
         if data and isinstance(data, list) and data[0].get("price"):
-            return round(float(data[0]["price"]), 4)
+            q = data[0]
+            return {
+                "price":         round(float(q.get("price", 0) or 0), 4),
+                "open":          round(float(q.get("open", 0) or 0), 4),
+                "previousClose": round(float(q.get("previousClose", 0) or 0), 4),
+            }
         return None
     except Exception as e:
-        print(f"Greska {ticker}: {e}")
+        print(f"  Greska {ticker}: {e}")
         return None
 
-def posalji_telegram(upozorenja):
-    if not upozorenja:
+# ── TELEGRAM ──────────────────────────────────────────────────────
+
+def posalji_telegram(grupa1, grupa2, grupa3):
+    """
+    Šalje jednu poruku s tri sekcije.
+    Grupu šalje samo ako ima stavki.
+    """
+    if not (grupa1 or grupa2 or grupa3):
         return False
 
-    now = datetime.now().strftime("%d.%m.%Y %H:%M")
-    poruka = f"*STOCK ALERT* {now}\n\n"
+    now    = datetime.now().strftime("%d.%m.%Y %H:%M")
+    poruka = f"*STOCK ALERT* {now}\n"
 
-    for u in upozorenja:
-        poruka += f"*{u['ticker']}*   `{u['cijena']:.2f} USD`\n"
+    if grupa1:
+        poruka += "\n*① Intraday proboj razine*\n"
+        for u in grupa1:
+            odmak = ((u["cijena"] - u["razina"]) / u["razina"]) * 100
+            poruka += f"  *{u['ticker']}*  `{u['cijena']:.2f}`  ({odmak:+.1f}% od {u['razina']:.2f})\n"
+
+    if grupa2:
+        poruka += "\n*② Zatvorilo iznad razine*\n"
+        for u in grupa2:
+            odmak = ((u["close"] - u["razina"]) / u["razina"]) * 100
+            poruka += f"  *{u['ticker']}*  close `{u['close']:.2f}`  ({odmak:+.1f}% od {u['razina']:.2f})\n"
+
+    if grupa3:
+        poruka += "\n*③ Danas otvorilo iznad razine*\n"
+        for u in grupa3:
+            odmak = ((u["open"] - u["razina"]) / u["razina"]) * 100
+            poruka += f"  *{u['ticker']}*  open `{u['open']:.2f}`  ({odmak:+.1f}% od {u['razina']:.2f})\n"
 
     params = urllib.parse.urlencode({
         "chat_id":    TELEGRAM_CHAT_ID,
@@ -109,7 +144,6 @@ def posalji_telegram(upozorenja):
     }).encode("utf-8")
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
     try:
         req = urllib.request.Request(url, data=params, method="POST")
         with urllib.request.urlopen(req, timeout=10) as r:
@@ -117,9 +151,8 @@ def posalji_telegram(upozorenja):
         if odgovor.get("ok"):
             print("Telegram poruka poslana.")
             return True
-        else:
-            print(f"Telegram greska: {odgovor}")
-            return False
+        print(f"Telegram greska: {odgovor}")
+        return False
     except Exception as e:
         print(f"Telegram greska: {e}")
         return False
@@ -136,55 +169,117 @@ def test_telegram():
         req = urllib.request.Request(url, data=params, method="POST")
         with urllib.request.urlopen(req, timeout=10) as r:
             odgovor = json.loads(r.read())
-        if odgovor.get("ok"):
-            print("Test poruka poslana.")
-        else:
-            print(f"Greska: {odgovor}")
+        print("Test OK." if odgovor.get("ok") else f"Greska: {odgovor}")
     except Exception as e:
         print(f"Greska: {e}")
 
+# ── LOGIKA PROVJERE ───────────────────────────────────────────────
+
 def provjeri():
+    """
+    Tri grupe alarma:
+
+    GRUPA 1 — Intraday proboj:
+      Trenutna cijena > razina * (1 + PRAG_POSTO/100)
+      Alarm se šalje jednom dok cijena padne ispod razine.
+
+    GRUPA 2 — Zatvaranje iznad razine:
+      previousClose > razina * (1 + PRAG_POSTO/100)
+      Uvjet: prethodni dan je zatvorio iznad razine.
+      Alarm se šalje jednom po sesiji zatvaranja.
+
+    GRUPA 3 — Otvaranje iznad razine (dan nakon zatvaranja):
+      Uvjet: previousClose je već bio iznad razine (tj. grupa 2 je zadovoljena)
+             I danas open > razina * (1 + PRAG_POSTO/100)
+      Ovo je najjači signal — probijena razina + gap open iznad nje.
+    """
     print(f"Provjera: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
 
-    poslano         = ucitaj_poslano()
-    nova_upozorenja = []
+    poslano  = ucitaj_poslano()
+    grupa1   = []  # intraday proboj
+    grupa2   = []  # zatvorilo iznad
+    grupa3   = []  # otvorilo iznad (dan nakon zatvaranja)
+
+    prag = 1 + PRAG_POSTO / 100
 
     for d in DIONICE:
         ticker = d["ticker"]
         razina = d["razina"]
-        k      = f"{ticker}_{razina}"
 
-        cijena = dohvati_cijenu(ticker)
-        if cijena is None:
+        quote = dohvati_quote(ticker)
+        if quote is None:
             print(f"  {ticker:<8} nije dostupno")
             continue
 
-        print(f"  {ticker:<8} {cijena:.4f}")
+        price  = quote["price"]
+        open_  = quote["open"]
+        prev_c = quote["previousClose"]
 
-        posto_odmak = ((cijena - razina) / razina) * 100
-        probilo     = cijena > razina and posto_odmak >= PRAG_POSTO
+        print(f"  {ticker:<8}  price={price:.2f}  open={open_:.2f}  prevClose={prev_c:.2f}  razina={razina:.2f}")
 
-        if probilo:
-            if k not in poslano:
-                print(f"  ALARM {ticker}: {cijena:.2f} probilo {razina:.2f} ({posto_odmak:+.2f}%)")
-                nova_upozorenja.append({
-                    "ticker": ticker,
-                    "cijena": cijena,
-                })
-                poslano[k] = {
-                    "poslano_u":         datetime.now().isoformat(),
-                    "cijena_u_trenutku": cijena,
+        # ── Ključevi za praćenje stanja ──────────────────────────
+        k1 = f"{ticker}_{razina}_g1"   # intraday
+        k2 = f"{ticker}_{razina}_g2"   # close
+        k3 = f"{ticker}_{razina}_g3"   # open
+
+        # ── GRUPA 1: intraday proboj ──────────────────────────────
+        if price >= razina * prag:
+            if k1 not in poslano:
+                odmak = (price - razina) / razina * 100
+                print(f"    G1 ALARM: {ticker} {price:.2f} (+{odmak:.1f}%)")
+                grupa1.append({"ticker": ticker, "cijena": price, "razina": razina})
+                poslano[k1] = {
+                    "poslano_u": datetime.now().isoformat(),
+                    "cijena":    price,
                 }
-            else:
-                print(f"  Vec poslano: {ticker}")
         else:
-            if k in poslano:
-                print(f"  Reset: {ticker}")
-                del poslano[k]
+            # Reset kad cijena padne ispod razine
+            if k1 in poslano:
+                print(f"    G1 reset: {ticker}")
+                del poslano[k1]
 
-    if nova_upozorenja:
-        print(f"Saljem Telegram: {len(nova_upozorenja)} alarm(a)")
-        posalji_telegram(nova_upozorenja)
+        # ── GRUPA 2: zatvaranje iznad razine ─────────────────────
+        # previousClose je zadnje zatvaranje (jučerašnji dan)
+        if prev_c >= razina * prag:
+            if k2 not in poslano:
+                odmak = (prev_c - razina) / razina * 100
+                print(f"    G2 ALARM: {ticker} close={prev_c:.2f} (+{odmak:.1f}%)")
+                grupa2.append({"ticker": ticker, "close": prev_c, "razina": razina})
+                poslano[k2] = {
+                    "poslano_u": datetime.now().isoformat(),
+                    "close":     prev_c,
+                }
+        else:
+            if k2 in poslano:
+                print(f"    G2 reset: {ticker}")
+                del poslano[k2]
+
+        # ── GRUPA 3: otvaranje iznad razine (dan nakon close) ─────
+        # Uvjet: previousClose je bio iznad razine (G2 zadovoljen)
+        #        I današnji open je iznad razine
+        prev_close_probijen = prev_c >= razina * prag
+        open_iznad          = open_  >= razina * prag
+
+        if prev_close_probijen and open_iznad:
+            if k3 not in poslano:
+                odmak = (open_ - razina) / razina * 100
+                print(f"    G3 ALARM: {ticker} open={open_:.2f} (+{odmak:.1f}%)")
+                grupa3.append({"ticker": ticker, "open": open_, "razina": razina})
+                poslano[k3] = {
+                    "poslano_u": datetime.now().isoformat(),
+                    "open":      open_,
+                }
+        else:
+            # Reset G3 kad uvjet prestane biti zadovoljen
+            if k3 in poslano:
+                print(f"    G3 reset: {ticker}")
+                del poslano[k3]
+
+    # ── Pošalji sve grupe u jednoj poruci ────────────────────────
+    ukupno = len(grupa1) + len(grupa2) + len(grupa3)
+    if ukupno:
+        print(f"\nSaljem Telegram: G1={len(grupa1)}, G2={len(grupa2)}, G3={len(grupa3)}")
+        posalji_telegram(grupa1, grupa2, grupa3)
     else:
         print("Nema novih upozorenja.")
 
