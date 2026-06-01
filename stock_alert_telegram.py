@@ -1,17 +1,14 @@
 """
-stock_alert.py — Stock price alert s tri grupe, logika US burze
+stock_alert.py — Stock price alert s tri grupe, OHLC historija
 
 GRUPE:
-  G1 — Intraday: price >= razina + 0.5% (durante trading sesije)
-  G2 — Close:    yesterday's close >= razina + 0.5% (postaje aktivan sljedeći dan)
-  G3 — Open:     dan nakon G2 zatvaranja, open >= razina + 0.5% (nakon 09:30 ET)
+  G1 — Intraday: trenutna cijena >= razina + 0.5% (samo dok je burza otvorena)
+  G2 — Close:    bilo koji neprocessirani trading dan je zatvorio >= razina + 0.5%
+  G3 — Open:     dan nakon G2 datuma, open >= razina + 0.5% (samo nakon 09:30 ET)
 
-PRAVILA:
-  - Pokreće se samo radnim danima (Mon-Fri, nisu US holidays)
-  - G1 se prati samo dok je burza otvorena (09:30–16:00 ET)
-  - G3 se provjerava tek nakon što burza otvori (>= 09:30 ET)
-  - G3 je validan samo ako je previousClose (jučer) bio iznad razine
-    I ovo je prvi trading dan NAKON tog zatvaranja
+Ključna razlika vs prethodne verzije:
+  Fetchamo OHLC za zadnjih 10 trading dana i procesiramo svaki dan zasebno.
+  Tako ne propuštamo dane čak i ako skripta nije bila pokrenuta ili je preskočila.
 """
 
 import urllib.request
@@ -25,7 +22,8 @@ FMP_API_KEY      = os.environ.get("FMP_API_KEY", "")
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-PRAG_POSTO = 0.5   # % iznad razine = proboj
+PRAG_POSTO   = 0.5   # % iznad razine = proboj
+HISTORY_DAYS = 10    # koliko trading dana gledamo unazad za G2/G3
 
 DIONICE = [
     {"ticker": "VRSN",  "razina": 310.00},
@@ -84,22 +82,11 @@ POSLANO_FILE = os.path.join(
     "stock_alert_poslano.json"
 )
 
-# ── US TRADING CALENDAR ───────────────────────────────────────────
+# ── TRADING CALENDAR ──────────────────────────────────────────────
 
 ET = zoneinfo.ZoneInfo("America/New_York")
 
-# Fiksni US blagdani (MM-DD format, godišnje)
-US_HOLIDAYS_FIXED = {
-    "01-01",  # New Year's Day
-    "06-19",  # Juneteenth
-    "07-04",  # Independence Day
-    "11-11",  # Veterans Day (burza otvorena, ali uključeno kao sigurnosna mreža)
-    "12-25",  # Christmas
-}
-
-# Promjenjivi US blagdani — generirani dinamički za tekuću godinu
 def _nth_weekday(year, month, weekday, n):
-    """n-ti weekday (0=Mon) u zadanom mjesecu/godini."""
     d = date(year, month, 1)
     count = 0
     while True:
@@ -110,112 +97,74 @@ def _nth_weekday(year, month, weekday, n):
         d += timedelta(days=1)
 
 def _last_weekday(year, month, weekday):
-    """Zadnji weekday u zadanom mjesecu/godini."""
     d = date(year, month + 1, 1) - timedelta(days=1) if month < 12 else date(year, 12, 31)
     while d.weekday() != weekday:
         d -= timedelta(days=1)
     return d
 
-def us_market_holidays(year):
-    """
-    Vraća set datuma (date objekti) kada je NYSE zatvorena.
-    Pokriva sve relevantne US blagdane.
-    """
-    holidays = set()
+def us_holidays(year):
+    h = set()
+    def obs(d):
+        if d.weekday() == 6: return d + timedelta(days=1)
+        if d.weekday() == 5: return d - timedelta(days=1)
+        return d
+    h.add(obs(date(year, 1,  1)))   # New Year
+    h.add(_nth_weekday(year, 1, 0, 3))  # MLK
+    h.add(_nth_weekday(year, 2, 0, 3))  # Presidents
+    # Good Friday
+    a = year % 19; b, c = divmod(year, 100); d2, e = divmod(b, 4)
+    f = (b+8)//25; g = (b-f+1)//3; hh = (19*a+b-d2-g+15)%30
+    i, k = divmod(c, 4); l = (32+2*e+2*i-hh-k)%7
+    m = (a+11*hh+22*l)//451; mo = (hh+l-7*m+114)//31; dy = (hh+l-7*m+114)%31+1
+    h.add(date(year, mo, dy) - timedelta(days=2))
+    h.add(_last_weekday(year, 5, 0))         # Memorial Day
+    h.add(obs(date(year, 6, 19)))            # Juneteenth
+    h.add(obs(date(year, 7,  4)))            # Independence Day
+    h.add(_nth_weekday(year, 9, 0, 1))       # Labor Day
+    h.add(_nth_weekday(year, 11, 3, 4))      # Thanksgiving
+    h.add(obs(date(year, 12, 25)))           # Christmas
+    return h
 
-    # New Year's Day
-    ny = date(year, 1, 1)
-    if ny.weekday() == 6: ny = date(year, 1, 2)   # Sun → Mon
-    if ny.weekday() == 5: ny = date(year, 1, 3)   # Sat → Mon (rijetko)
-    holidays.add(ny)
+def is_trading_day(d: date) -> bool:
+    return d.weekday() < 5 and d not in us_holidays(d.year)
 
-    # MLK Day — 3. ponedjeljak u siječnju
-    holidays.add(_nth_weekday(year, 1, 0, 3))
-
-    # Presidents' Day — 3. ponedjeljak u veljači
-    holidays.add(_nth_weekday(year, 2, 0, 3))
-
-    # Good Friday — 2 dana prije Easter nedjelje
-    # Easter algoritam (Anonymous Gregorian)
-    a = year % 19
-    b, c = divmod(year, 100)
-    d, e = divmod(b, 4)
-    f = (b + 8) // 25
-    g = (b - f + 1) // 3
-    h = (19*a + b - d - g + 15) % 30
-    i, k = divmod(c, 4)
-    l = (32 + 2*e + 2*i - h - k) % 7
-    m = (a + 11*h + 22*l) // 451
-    month = (h + l - 7*m + 114) // 31
-    day   = ((h + l - 7*m + 114) % 31) + 1
-    easter = date(year, month, day)
-    holidays.add(easter - timedelta(days=2))
-
-    # Memorial Day — zadnji ponedjeljak u svibnju
-    holidays.add(_last_weekday(year, 5, 0))
-
-    # Juneteenth
-    jt = date(year, 6, 19)
-    if jt.weekday() == 6: jt = date(year, 6, 20)
-    if jt.weekday() == 5: jt = date(year, 6, 18)
-    holidays.add(jt)
-
-    # Independence Day
-    id_ = date(year, 7, 4)
-    if id_.weekday() == 6: id_ = date(year, 7, 5)
-    if id_.weekday() == 5: id_ = date(year, 7, 3)
-    holidays.add(id_)
-
-    # Labor Day — 1. ponedjeljak u rujnu
-    holidays.add(_nth_weekday(year, 9, 0, 1))
-
-    # Thanksgiving — 4. četvrtak u studenom
-    holidays.add(_nth_weekday(year, 11, 3, 4))
-
-    # Christmas
-    xmas = date(year, 12, 25)
-    if xmas.weekday() == 6: xmas = date(year, 12, 26)
-    if xmas.weekday() == 5: xmas = date(year, 12, 24)
-    holidays.add(xmas)
-
-    return holidays
-
-def is_trading_day(d: date = None) -> bool:
-    """Je li zadani datum (default: danas ET) radni dan burze."""
-    if d is None:
-        d = datetime.now(ET).date()
-    if d.weekday() >= 5:   # subota ili nedjelja
-        return False
-    return d not in us_market_holidays(d.year)
-
-def market_open_now() -> bool:
-    """Je li burza trenutno otvorena (09:30–16:00 ET)."""
-    now = datetime.now(ET)
-    if not is_trading_day(now.date()):
-        return False
-    t = now.time()
-    from datetime import time
-    return time(9, 30) <= t <= time(16, 0)
-
-def market_opened_today() -> bool:
-    """Je li burza već otvorila danas (>= 09:30 ET, trading day)."""
-    now = datetime.now(ET)
-    if not is_trading_day(now.date()):
-        return False
-    from datetime import time
-    return now.time() >= time(9, 30)
-
-def prev_trading_day(d: date = None) -> date:
-    """Vraća prethodni trading dan."""
-    if d is None:
-        d = datetime.now(ET).date()
+def prev_trading_day(d: date) -> date:
     d -= timedelta(days=1)
     while not is_trading_day(d):
         d -= timedelta(days=1)
     return d
 
-def today_et() -> date:
-    return datetime.now(ET).date()
+def next_trading_day(d: date) -> date:
+    d += timedelta(days=1)
+    while not is_trading_day(d):
+        d += timedelta(days=1)
+    return d
+
+def last_n_trading_days(n: int, up_to: date = None) -> list:
+    """Vraća listu zadnjih n završenih trading dana (bez danas)."""
+    if up_to is None:
+        up_to = datetime.now(ET).date()
+    days = []
+    d = up_to - timedelta(days=1)
+    while len(days) < n:
+        if is_trading_day(d):
+            days.append(d)
+        d -= timedelta(days=1)
+    return sorted(days)  # kronološki
+
+def market_open_now() -> bool:
+    now = datetime.now(ET)
+    if not is_trading_day(now.date()):
+        return False
+    from datetime import time as dtime
+    return dtime(9, 30) <= now.time() <= dtime(16, 0)
+
+def market_opened_today() -> bool:
+    now = datetime.now(ET)
+    if not is_trading_day(now.date()):
+        return False
+    from datetime import time as dtime
+    return now.time() >= dtime(9, 30)
 
 # ── STANJE ────────────────────────────────────────────────────────
 
@@ -229,9 +178,10 @@ def spremi_poslano(poslano):
     with open(POSLANO_FILE, "w") as f:
         json.dump(poslano, f, indent=2, ensure_ascii=False)
 
-# ── PODACI ────────────────────────────────────────────────────────
+# ── FMP API ───────────────────────────────────────────────────────
 
 def dohvati_quote(ticker):
+    """Trenutna cijena, open i previousClose."""
     url = (f"https://financialmodelingprep.com/stable/quote"
            f"?symbol={ticker}&apikey={FMP_API_KEY}")
     try:
@@ -241,14 +191,53 @@ def dohvati_quote(ticker):
         if data and isinstance(data, list) and data[0].get("price"):
             q = data[0]
             return {
-                "price":         round(float(q.get("price")         or 0), 4),
-                "open":          round(float(q.get("open")          or 0), 4),
-                "previousClose": round(float(q.get("previousClose") or 0), 4),
+                "price": round(float(q.get("price") or 0), 4),
+                "open":  round(float(q.get("open")  or 0), 4),
             }
         return None
     except Exception as e:
-        print(f"  Greska {ticker}: {e}")
+        print(f"  Greska quote {ticker}: {e}")
         return None
+
+def dohvati_ohlc_historiju(ticker, days=15):
+    """
+    Fetchaj dnevne OHLC podatke za zadnjih `days` kalendarskih dana.
+    Vraća dict {date_str: {"open": ..., "close": ...}}
+    """
+    end   = datetime.now(ET).date()
+    start = end - timedelta(days=days + 20)  # više margine  # malo više za sigurnost
+    # Bez &to parametra — FMP vraća najsvježije dostupne podatke
+    # &to=danas može rezati zadnji dan ako nije još procesiran na FMP strani
+    url = (f"https://financialmodelingprep.com/stable/historical-price-eod/full"
+           f"?symbol={ticker}"
+           f"&from={start.isoformat()}"
+           f"&apikey={FMP_API_KEY}")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read())
+
+        # FMP vraća {"historical": [...]} ili direktno listu
+        if isinstance(data, dict) and "historical" in data:
+            records = data["historical"]
+        elif isinstance(data, list):
+            records = data
+        else:
+            return {}
+
+        result = {}
+        for row in records:
+            d_str = str(row.get("date", ""))[:10]
+            if not d_str:
+                continue
+            result[d_str] = {
+                "open":  round(float(row.get("open",  0) or 0), 4),
+                "close": round(float(row.get("close", 0) or 0), 4),
+            }
+        return result
+    except Exception as e:
+        print(f"  Greska historija {ticker}: {e}")
+        return {}
 
 # ── TELEGRAM ──────────────────────────────────────────────────────
 
@@ -269,20 +258,21 @@ def posalji_telegram(grupa1, grupa2, grupa3):
         poruka += "\n*② Zatvorilo iznad razine*\n"
         for u in grupa2:
             odmak = (u["close"] - u["razina"]) / u["razina"] * 100
-            poruka += f"  *{u['ticker']}*  close `{u['close']:.2f}`  ({odmak:+.1f}% od {u['razina']:.2f})\n"
+            poruka += (f"  *{u['ticker']}*  close `{u['close']:.2f}`"
+                       f"  {u['datum']}  ({odmak:+.1f}% od {u['razina']:.2f})\n")
 
     if grupa3:
         poruka += "\n*③ Otvorilo iznad razine (dan nakon zatvaranja)*\n"
         for u in grupa3:
             odmak = (u["open"] - u["razina"]) / u["razina"] * 100
-            poruka += f"  *{u['ticker']}*  open `{u['open']:.2f}`  ({odmak:+.1f}% od {u['razina']:.2f})\n"
+            poruka += (f"  *{u['ticker']}*  open `{u['open']:.2f}`"
+                       f"  {u['datum']}  ({odmak:+.1f}% od {u['razina']:.2f})\n")
 
     params = urllib.parse.urlencode({
         "chat_id":    TELEGRAM_CHAT_ID,
         "text":       poruka,
         "parse_mode": "Markdown",
     }).encode("utf-8")
-
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
         req = urllib.request.Request(url, data=params, method="POST")
@@ -316,123 +306,148 @@ def test_telegram():
 # ── PROVJERA ──────────────────────────────────────────────────────
 
 def provjeri():
-    now_et  = datetime.now(ET)
-    today   = today_et()
+    now_et = datetime.now(ET)
+    today  = now_et.date()
 
     print(f"Provjera: {now_et.strftime('%d.%m.%Y %H:%M:%S ET')}")
 
-    # Provjeri trading day
     if not is_trading_day(today):
         print(f"  Danas ({today.strftime('%A %d.%m.')}) nije radni dan burze. Izlazim.")
         return
 
-    burza_otvorena  = market_open_now()
-    burza_otvorila  = market_opened_today()
-    prev_td         = prev_trading_day(today)
+    burza_otvorena = market_open_now()
+    burza_otvorila = market_opened_today()
+    prag           = 1 + PRAG_POSTO / 100
+    today_s        = today.isoformat()
 
-    print(f"  Trading day: DA | Burza otvorena: {'DA' if burza_otvorena else 'NE'} | "
-          f"Prethodni trading dan: {prev_td}")
+    # Zadnjih HISTORY_DAYS završenih trading dana (bez danas)
+    hist_days = last_n_trading_days(HISTORY_DAYS, today)
+
+    print(f"  Burza otvorena: {'DA' if burza_otvorena else 'NE'} | "
+          f"Otvorila: {'DA' if burza_otvorila else 'NE'} | "
+          f"Provjera dana: {hist_days[0].isoformat()} — {hist_days[-1].isoformat()}")
 
     poslano = ucitaj_poslano()
-    prag    = 1 + PRAG_POSTO / 100
-    today_s = today.isoformat()          # "2026-05-26"
-    prev_s  = prev_td.isoformat()        # "2026-05-23"
-
-    grupa1 = []
-    grupa2 = []
-    grupa3 = []
+    grupa1, grupa2, grupa3 = [], [], []
 
     for d in DIONICE:
         ticker = d["ticker"]
         razina = d["razina"]
 
-        quote = dohvati_quote(ticker)
-        if quote is None:
-            print(f"  {ticker:<8} nije dostupno")
-            continue
+        # Dohvati OHLC historiju i trenutni quote paralelno
+        historija = dohvati_ohlc_historiju(ticker, days=HISTORY_DAYS + 5)
+        quote     = dohvati_quote(ticker) if burza_otvorena else None
 
-        price  = quote["price"]
-        open_  = quote["open"]
-        prev_c = quote["previousClose"]
+        price = quote["price"] if quote else None
+        open_ = quote["open"]  if quote else None
 
-        print(f"  {ticker:<8}  price={price:.2f}  open={open_:.2f}  "
-              f"prevClose={prev_c:.2f}  razina={razina:.2f}", end="")
+        # Ako burza nije otvorena ali imamo OHLC, uzmi open iz historije za danas
+        # (ili ako je quote dostupan, koristi taj open)
+        if not open_ and today_s in historija:
+            open_ = historija[today_s]["open"]
+
+        print(f"  {ticker:<8}  razina={razina:.2f}  "
+              f"price={price:.2f if price else '—'}  "
+              f"open={open_:.2f if open_ else '—'}", end="")
 
         k1 = f"{ticker}_{razina}_g1"
         k2 = f"{ticker}_{razina}_g2"
         k3 = f"{ticker}_{razina}_g3"
 
         # ── G1: Intraday proboj ───────────────────────────────────
-        # Samo dok je burza otvorena
-        if burza_otvorena:
+        if burza_otvorena and price is not None:
             if price >= razina * prag:
-                # Alarm samo jednom po danu (provjeri datum)
                 prev_g1 = poslano.get(k1, {})
                 if prev_g1.get("datum") != today_s:
                     odmak = (price - razina) / razina * 100
-                    print(f"\n    → G1: {price:.2f} (+{odmak:.1f}%)", end="")
+                    print(f"\n    G1: {price:.2f} (+{odmak:.1f}%)", end="")
                     grupa1.append({"ticker": ticker, "cijena": price, "razina": razina})
-                    poslano[k1] = {
-                        "datum":   today_s,
-                        "cijena":  price,
-                        "poslano": datetime.now(ET).isoformat(),
-                    }
+                    poslano[k1] = {"datum": today_s, "cijena": price,
+                                   "poslano": now_et.isoformat()}
             else:
-                # Reset G1 kad cijena padne ispod razine (novi dan = nova šansa)
                 if k1 in poslano and poslano[k1].get("datum") != today_s:
                     del poslano[k1]
 
-        # ── G2: Zatvaranje iznad razine ───────────────────────────
-        # previousClose je zadnje zatvaranje (prethodni trading dan)
-        # Bilježi datum zatvaranja kao prev_s da G3 zna koji je to bio dan
-        if prev_c >= razina * prag:
-            prev_g2 = poslano.get(k2, {})
-            # Alarm jednom — kad zabiježimo novo zatvaranje (prev_s)
-            if prev_g2.get("close_datum") != prev_s:
-                odmak = (prev_c - razina) / razina * 100
-                print(f"\n    → G2: close={prev_c:.2f} (+{odmak:.1f}%) od {prev_s}", end="")
-                grupa2.append({"ticker": ticker, "close": prev_c, "razina": razina,
-                               "close_datum": prev_s})
-                poslano[k2] = {
-                    "close_datum": prev_s,
-                    "close":       prev_c,
-                    "poslano":     datetime.now(ET).isoformat(),
-                }
-        else:
-            # Ako previousClose više nije iznad razine, reset G2 i G3
-            if k2 in poslano:
-                print(f"\n    → G2 reset", end="")
-                del poslano[k2]
-            if k3 in poslano:
-                del poslano[k3]
+        # ── G2: Prođi kroz sve historical dane i traži close >= razine ──
+        # Šalje alarm samo jednom po datumu zatvaranja
+        sent_g2_dates = set(poslano.get(k2, {}).get("datumi", []))
 
-        # ── G3: Otvaranje iznad razine dan nakon G2 zatvaranja ────
-        # Uvjeti:
-        #   1. Burza je već otvorila danas (>= 09:30 ET)
-        #   2. G2 je bio aktivan za prev_s (prethodni trading dan)
-        #   3. Danas open >= razina * prag
-        #   4. Alarm još nije poslan za današnji datum
-        g2_info = poslano.get(k2, {})
-        g2_aktivan = g2_info.get("close_datum") == prev_s
+        for td in hist_days:
+            td_s = td.isoformat()
+            if td_s in sent_g2_dates:
+                continue  # ovaj dan je već obrađen
 
-        if burza_otvorila and g2_aktivan and open_ >= razina * prag:
-            prev_g3 = poslano.get(k3, {})
-            if prev_g3.get("datum") != today_s:
-                odmak = (open_ - razina) / razina * 100
-                print(f"\n    → G3: open={open_:.2f} (+{odmak:.1f}%) danas {today_s}", end="")
-                grupa3.append({"ticker": ticker, "open": open_, "razina": razina})
-                poslano[k3] = {
-                    "datum":   today_s,
-                    "open":    open_,
-                    "poslano": datetime.now(ET).isoformat(),
-                }
+            ohlc = historija.get(td_s)
+            if not ohlc:
+                continue
 
-        print()  # novi red po dionici
+            close = ohlc["close"]
+            if close >= razina * prag:
+                odmak = (close - razina) / razina * 100
+                print(f"\n    G2: close={close:.2f} datum={td_s} (+{odmak:.1f}%)", end="")
+                grupa2.append({"ticker": ticker, "close": close,
+                               "razina": razina, "datum": td_s})
+                sent_g2_dates.add(td_s)
+
+        # Ažuriraj listu G2 datuma u stanju
+        if sent_g2_dates:
+            # Zadrži samo HISTORY_DAYS najnovijih
+            sorted_dates = sorted(sent_g2_dates)[-HISTORY_DAYS:]
+            poslano[k2] = {"datumi": sorted_dates}
+        elif k2 in poslano:
+            del poslano[k2]
+
+        # ── G3: Dan nakon G2 close — open >= razine ──────────────
+        # Za svaki G2 datum, provjeri je li idući trading dan otvorilo iznad razine
+        if not burza_otvorila:
+            print()
+            continue
+
+        sent_g3_dates = set(poslano.get(k3, {}).get("datumi", []))
+        g2_datumi     = sorted(poslano.get(k2, {}).get("datumi", []))
+
+        for g2_datum_s in g2_datumi:
+            g2_datum  = date.fromisoformat(g2_datum_s)
+            next_td   = next_trading_day(g2_datum)
+            next_td_s = next_td.isoformat()
+
+            if next_td_s in sent_g3_dates:
+                continue  # već poslano
+
+            # Provjeri samo ako je idući trading dan <= danas
+            if next_td > today:
+                continue
+
+            # Dohvati open za next_td
+            if next_td == today:
+                # Danas — koristi live open
+                open_next = open_
+            else:
+                # Prošli dan — iz historije
+                ohlc_next = historija.get(next_td_s)
+                open_next = ohlc_next["open"] if ohlc_next else None
+
+            if open_next is None:
+                continue
+
+            if open_next >= razina * prag:
+                odmak = (open_next - razina) / razina * 100
+                print(f"\n    G3: open={open_next:.2f} datum={next_td_s} "
+                      f"(G2 close={g2_datum_s}) (+{odmak:.1f}%)", end="")
+                grupa3.append({"ticker": ticker, "open": open_next,
+                               "razina": razina, "datum": next_td_s})
+                sent_g3_dates.add(next_td_s)
+
+        if sent_g3_dates:
+            sorted_g3 = sorted(sent_g3_dates)[-HISTORY_DAYS:]
+            poslano[k3] = {"datumi": sorted_g3}
+
+        print()  # novi red
 
     # ── Pošalji ───────────────────────────────────────────────────
     ukupno = len(grupa1) + len(grupa2) + len(grupa3)
     if ukupno:
-        print(f"\nSaljem Telegram: G1={len(grupa1)}, G2={len(grupa2)}, G3={len(grupa3)}")
+        print(f"\nSaljem: G1={len(grupa1)}, G2={len(grupa2)}, G3={len(grupa3)}")
         posalji_telegram(grupa1, grupa2, grupa3)
     else:
         print("Nema novih upozorenja.")
