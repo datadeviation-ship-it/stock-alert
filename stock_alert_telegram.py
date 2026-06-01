@@ -1,14 +1,18 @@
 """
-stock_alert.py — Stock price alert s tri grupe, OHLC historija
+stock_alert.py — Stock price alert v4
 
 GRUPE:
-  G1 — Intraday: trenutna cijena >= razina + 0.5% (samo dok je burza otvorena)
-  G2 — Close:    bilo koji neprocessirani trading dan je zatvorio >= razina + 0.5%
-  G3 — Open:     dan nakon G2 datuma, open >= razina + 0.5% (samo nakon 09:30 ET)
+  G1 — Intraday: price >= razina + 0.5%  (samo dok je burza otvorena 09:30-16:00 ET)
+  G2 — Close:    bilo koji od zadnjih 10 trading dana zatvorio >= razina + 0.5%
+  G3 — Open:     dan nakon G2 zatvaranja otvorio >= razina + 0.5%
 
-Ključna razlika vs prethodne verzije:
-  Fetchamo OHLC za zadnjih 10 trading dana i procesiramo svaki dan zasebno.
-  Tako ne propuštamo dane čak i ako skripta nije bila pokrenuta ili je preskočila.
+  G2 i G3 se provjeravaju uvijek (i prije i poslije otvaranja burze).
+  G1 samo dok je burza otvorena.
+
+Pokretanje:
+  python stock_alert.py           — normalna provjera
+  python stock_alert.py test      — test Telegram poruka
+  python stock_alert.py reset     — briše poslano.json (nova provjera svega)
 """
 
 import urllib.request
@@ -22,8 +26,8 @@ FMP_API_KEY      = os.environ.get("FMP_API_KEY", "")
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-PRAG_POSTO   = 0.5   # % iznad razine = proboj
-HISTORY_DAYS = 10    # koliko trading dana gledamo unazad za G2/G3
+PRAG_POSTO   = 0.5
+HISTORY_DAYS = 10
 
 DIONICE = [
     {"ticker": "VRSN",  "razina": 310.00},
@@ -87,86 +91,64 @@ POSLANO_FILE = os.path.join(
 ET = zoneinfo.ZoneInfo("America/New_York")
 
 def _nth_weekday(year, month, weekday, n):
-    d = date(year, month, 1)
-    count = 0
+    d, count = date(year, month, 1), 0
     while True:
         if d.weekday() == weekday:
             count += 1
-            if count == n:
-                return d
+            if count == n: return d
         d += timedelta(days=1)
 
 def _last_weekday(year, month, weekday):
-    d = date(year, month + 1, 1) - timedelta(days=1) if month < 12 else date(year, 12, 31)
-    while d.weekday() != weekday:
-        d -= timedelta(days=1)
+    d = date(year, month+1, 1) - timedelta(days=1) if month < 12 else date(year, 12, 31)
+    while d.weekday() != weekday: d -= timedelta(days=1)
     return d
 
 def us_holidays(year):
-    h = set()
     def obs(d):
         if d.weekday() == 6: return d + timedelta(days=1)
         if d.weekday() == 5: return d - timedelta(days=1)
         return d
-    h.add(obs(date(year, 1,  1)))   # New Year
-    h.add(_nth_weekday(year, 1, 0, 3))  # MLK
-    h.add(_nth_weekday(year, 2, 0, 3))  # Presidents
+    h = set()
+    h.add(obs(date(year, 1, 1)))
+    h.add(_nth_weekday(year, 1, 0, 3))
+    h.add(_nth_weekday(year, 2, 0, 3))
     # Good Friday
-    a = year % 19; b, c = divmod(year, 100); d2, e = divmod(b, 4)
-    f = (b+8)//25; g = (b-f+1)//3; hh = (19*a+b-d2-g+15)%30
-    i, k = divmod(c, 4); l = (32+2*e+2*i-hh-k)%7
-    m = (a+11*hh+22*l)//451; mo = (hh+l-7*m+114)//31; dy = (hh+l-7*m+114)%31+1
+    a = year%19; b,c = divmod(year,100); d2,e = divmod(b,4)
+    f=(b+8)//25; g=(b-f+1)//3; hh=(19*a+b-d2-g+15)%30
+    i,k=divmod(c,4); l=(32+2*e+2*i-hh-k)%7
+    m=(a+11*hh+22*l)//451; mo=(hh+l-7*m+114)//31; dy=(hh+l-7*m+114)%31+1
     h.add(date(year, mo, dy) - timedelta(days=2))
-    h.add(_last_weekday(year, 5, 0))         # Memorial Day
-    h.add(obs(date(year, 6, 19)))            # Juneteenth
-    h.add(obs(date(year, 7,  4)))            # Independence Day
-    h.add(_nth_weekday(year, 9, 0, 1))       # Labor Day
-    h.add(_nth_weekday(year, 11, 3, 4))      # Thanksgiving
-    h.add(obs(date(year, 12, 25)))           # Christmas
+    h.add(_last_weekday(year, 5, 0))
+    h.add(obs(date(year, 6, 19)))
+    h.add(obs(date(year, 7, 4)))
+    h.add(_nth_weekday(year, 9, 0, 1))
+    h.add(_nth_weekday(year, 11, 3, 4))
+    h.add(obs(date(year, 12, 25)))
     return h
 
 def is_trading_day(d: date) -> bool:
     return d.weekday() < 5 and d not in us_holidays(d.year)
 
-def prev_trading_day(d: date) -> date:
-    d -= timedelta(days=1)
-    while not is_trading_day(d):
-        d -= timedelta(days=1)
-    return d
-
 def next_trading_day(d: date) -> date:
     d += timedelta(days=1)
-    while not is_trading_day(d):
-        d += timedelta(days=1)
+    while not is_trading_day(d): d += timedelta(days=1)
     return d
 
-def last_n_trading_days(n: int, up_to: date = None) -> list:
-    """Vraća listu zadnjih n završenih trading dana (bez danas)."""
-    if up_to is None:
-        up_to = datetime.now(ET).date()
-    days = []
-    d = up_to - timedelta(days=1)
+def last_n_trading_days(n: int, before: date) -> list:
+    """Vraća listu zadnjih n trading dana koji su završili (< before)."""
+    days, d = [], before - timedelta(days=1)
     while len(days) < n:
-        if is_trading_day(d):
-            days.append(d)
+        if is_trading_day(d): days.append(d)
         d -= timedelta(days=1)
-    return sorted(days)  # kronološki
+    return sorted(days)
 
-def market_open_now() -> bool:
-    now = datetime.now(ET)
-    if not is_trading_day(now.date()):
-        return False
+def burza_je_otvorena() -> bool:
     from datetime import time as dtime
-    return dtime(9, 30) <= now.time() <= dtime(16, 0)
-
-def market_opened_today() -> bool:
     now = datetime.now(ET)
-    if not is_trading_day(now.date()):
-        return False
-    from datetime import time as dtime
-    return now.time() >= dtime(9, 30)
+    return (is_trading_day(now.date()) and
+            dtime(9, 30) <= now.time() <= dtime(16, 0))
 
-# ── STANJE ────────────────────────────────────────────────────────
+# ── JSON STATE ────────────────────────────────────────────────────
 
 def ucitaj_poslano():
     if os.path.exists(POSLANO_FILE):
@@ -174,14 +156,13 @@ def ucitaj_poslano():
             return json.load(f)
     return {}
 
-def spremi_poslano(poslano):
+def spremi_poslano(p):
     with open(POSLANO_FILE, "w") as f:
-        json.dump(poslano, f, indent=2, ensure_ascii=False)
+        json.dump(p, f, indent=2, ensure_ascii=False)
 
-# ── FMP API ───────────────────────────────────────────────────────
+# ── FMP ───────────────────────────────────────────────────────────
 
 def dohvati_quote(ticker):
-    """Trenutna cijena, open i previousClose."""
     url = (f"https://financialmodelingprep.com/stable/quote"
            f"?symbol={ticker}&apikey={FMP_API_KEY}")
     try:
@@ -194,120 +175,96 @@ def dohvati_quote(ticker):
                 "price": round(float(q.get("price") or 0), 4),
                 "open":  round(float(q.get("open")  or 0), 4),
             }
-        return None
     except Exception as e:
-        print(f"  Greska quote {ticker}: {e}")
-        return None
+        print(f"  quote greska {ticker}: {e}")
+    return None
 
-def dohvati_ohlc_historiju(ticker, days=15):
-    """
-    Fetchaj dnevne OHLC podatke za zadnjih `days` kalendarskih dana.
-    Vraća dict {date_str: {"open": ..., "close": ...}}
-    """
-    end   = datetime.now(ET).date()
-    start = end - timedelta(days=days + 20)  # više margine  # malo više za sigurnost
-    # Bez &to parametra — FMP vraća najsvježije dostupne podatke
-    # &to=danas može rezati zadnji dan ako nije još procesiran na FMP strani
+def dohvati_historiju(ticker):
+    """Dohvati dnevne OHLC bez &to ograničenja — FMP vraća najsvježije podatke."""
+    start = datetime.now(ET).date() - timedelta(days=HISTORY_DAYS * 3)
     url = (f"https://financialmodelingprep.com/stable/historical-price-eod/full"
-           f"?symbol={ticker}"
-           f"&from={start.isoformat()}"
-           f"&apikey={FMP_API_KEY}")
+           f"?symbol={ticker}&from={start.isoformat()}&apikey={FMP_API_KEY}")
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=15) as r:
             data = json.loads(r.read())
-
-        # FMP vraća {"historical": [...]} ili direktno listu
-        if isinstance(data, dict) and "historical" in data:
-            records = data["historical"]
-        elif isinstance(data, list):
-            records = data
-        else:
-            return {}
-
+        records = data.get("historical", data) if isinstance(data, dict) else data
         result = {}
         for row in records:
-            d_str = str(row.get("date", ""))[:10]
-            if not d_str:
-                continue
-            result[d_str] = {
-                "open":  round(float(row.get("open",  0) or 0), 4),
-                "close": round(float(row.get("close", 0) or 0), 4),
-            }
+            ds = str(row.get("date", ""))[:10]
+            if ds:
+                result[ds] = {
+                    "open":  round(float(row.get("open",  0) or 0), 4),
+                    "close": round(float(row.get("close", 0) or 0), 4),
+                }
         return result
     except Exception as e:
-        print(f"  Greska historija {ticker}: {e}")
-        return {}
+        print(f"  historija greska {ticker}: {e}")
+    return {}
 
 # ── TELEGRAM ──────────────────────────────────────────────────────
 
-def posalji_telegram(grupa1, grupa2, grupa3):
-    if not (grupa1 or grupa2 or grupa3):
+def posalji_telegram(g1, g2, g3):
+    if not (g1 or g2 or g3):
         return False
-
     now    = datetime.now(ET).strftime("%d.%m.%Y %H:%M ET")
     poruka = f"*STOCK ALERT* {now}\n"
-
-    if grupa1:
-        poruka += "\n*① Intraday proboj razine*\n"
-        for u in grupa1:
+    if g1:
+        poruka += "\n*① Intraday proboj*\n"
+        for u in g1:
             odmak = (u["cijena"] - u["razina"]) / u["razina"] * 100
-            poruka += f"  *{u['ticker']}*  `{u['cijena']:.2f}`  ({odmak:+.1f}% od {u['razina']:.2f})\n"
-
-    if grupa2:
+            poruka += f"  *{u['ticker']}*  `{u['cijena']:.2f}`  ({odmak:+.1f}%)\n"
+    if g2:
         poruka += "\n*② Zatvorilo iznad razine*\n"
-        for u in grupa2:
+        for u in g2:
             odmak = (u["close"] - u["razina"]) / u["razina"] * 100
-            poruka += (f"  *{u['ticker']}*  close `{u['close']:.2f}`"
-                       f"  {u['datum']}  ({odmak:+.1f}% od {u['razina']:.2f})\n")
-
-    if grupa3:
-        poruka += "\n*③ Otvorilo iznad razine (dan nakon zatvaranja)*\n"
-        for u in grupa3:
+            poruka += f"  *{u['ticker']}*  close `{u['close']:.2f}`  {u['datum']}  ({odmak:+.1f}%)\n"
+    if g3:
+        poruka += "\n*③ Otvorilo iznad razine*\n"
+        for u in g3:
             odmak = (u["open"] - u["razina"]) / u["razina"] * 100
-            poruka += (f"  *{u['ticker']}*  open `{u['open']:.2f}`"
-                       f"  {u['datum']}  ({odmak:+.1f}% od {u['razina']:.2f})\n")
+            poruka += f"  *{u['ticker']}*  open `{u['open']:.2f}`  {u['datum']}  ({odmak:+.1f}%)\n"
 
     params = urllib.parse.urlencode({
-        "chat_id":    TELEGRAM_CHAT_ID,
-        "text":       poruka,
-        "parse_mode": "Markdown",
+        "chat_id": TELEGRAM_CHAT_ID, "text": poruka, "parse_mode": "Markdown"
     }).encode("utf-8")
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        req = urllib.request.Request(url, data=params, method="POST")
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            data=params, method="POST")
         with urllib.request.urlopen(req, timeout=10) as r:
-            odgovor = json.loads(r.read())
-        if odgovor.get("ok"):
-            print("Telegram poruka poslana.")
+            resp = json.loads(r.read())
+        if resp.get("ok"):
+            print("Telegram OK.")
             return True
-        print(f"Telegram greska: {odgovor}")
-        return False
+        print(f"Telegram greska: {resp}")
     except Exception as e:
         print(f"Telegram greska: {e}")
-        return False
+    return False
 
 def test_telegram():
     now = datetime.now(ET).strftime("%d.%m.%Y %H:%M ET")
     params = urllib.parse.urlencode({
-        "chat_id":    TELEGRAM_CHAT_ID,
-        "text":       f"*Stock Alert bot aktivan*\nTest poruka {now}",
-        "parse_mode": "Markdown",
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": f"*Stock Alert bot aktivan* — test {now}",
+        "parse_mode": "Markdown"
     }).encode("utf-8")
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        req = urllib.request.Request(url, data=params, method="POST")
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            data=params, method="POST")
         with urllib.request.urlopen(req, timeout=10) as r:
-            odgovor = json.loads(r.read())
-        print("Test OK." if odgovor.get("ok") else f"Greska: {odgovor}")
+            resp = json.loads(r.read())
+        print("Test OK." if resp.get("ok") else f"Greska: {resp}")
     except Exception as e:
         print(f"Greska: {e}")
 
 # ── PROVJERA ──────────────────────────────────────────────────────
 
 def provjeri():
-    now_et = datetime.now(ET)
-    today  = now_et.date()
+    now_et  = datetime.now(ET)
+    today   = now_et.date()
+    today_s = today.isoformat()
 
     print(f"Provjera: {now_et.strftime('%d.%m.%Y %H:%M:%S ET')}")
 
@@ -315,113 +272,105 @@ def provjeri():
         print(f"  Danas ({today.strftime('%A %d.%m.')}) nije radni dan burze. Izlazim.")
         return
 
-    burza_otvorena = market_open_now()
-    burza_otvorila = market_opened_today()
-    prag           = 1 + PRAG_POSTO / 100
-    today_s        = today.isoformat()
+    otvorena = burza_je_otvorena()
+    prag     = 1 + PRAG_POSTO / 100
 
-    # Zadnjih HISTORY_DAYS završenih trading dana (bez danas)
+    # Zadnjih HISTORY_DAYS završenih trading dana (ne uključuje danas)
     hist_days = last_n_trading_days(HISTORY_DAYS, today)
-
-    print(f"  Burza otvorena: {'DA' if burza_otvorena else 'NE'} | "
-          f"Otvorila: {'DA' if burza_otvorila else 'NE'} | "
-          f"Provjera dana: {hist_days[0].isoformat()} — {hist_days[-1].isoformat()}")
+    print(f"  Burza otvorena: {'DA' if otvorena else 'NE'} | "
+          f"Provjera dana: {hist_days[0]} — {hist_days[-1]}")
 
     poslano = ucitaj_poslano()
-    grupa1, grupa2, grupa3 = [], [], []
+    g1, g2, g3 = [], [], []
 
     for d in DIONICE:
         ticker = d["ticker"]
         razina = d["razina"]
         try:
-            historija = dohvati_ohlc_historiju(ticker, days=HISTORY_DAYS + 5)
-            quote     = dohvati_quote(ticker) if burza_otvorena else None
+            hist  = dohvati_historiju(ticker)
+            quote = dohvati_quote(ticker) if otvorena else None
 
             price = quote["price"] if quote else None
-            open_ = quote["open"]  if quote else None
+            # open danas: iz live quote ako otvorena, inače iz historije
+            open_danas = (quote["open"] if quote and quote.get("open")
+                          else hist.get(today_s, {}).get("open"))
 
-            if not open_ and today_s in historija:
-                open_ = historija[today_s]["open"]
-
-            price_s = f"{price:.2f}" if price is not None else "—"
-            open_s  = f"{open_:.2f}" if open_  is not None else "—"
-            print(f"  {ticker:<8}  razina={razina:.2f}  price={price_s}  open={open_s}", end="")
+            ps = f"{price:.2f}" if price is not None else "—"
+            os_ = f"{open_danas:.2f}" if open_danas is not None else "—"
+            print(f"  {ticker:<8} razina={razina:.2f}  price={ps}  open={os_}", end="")
 
             k1 = f"{ticker}_{razina}_g1"
             k2 = f"{ticker}_{razina}_g2"
             k3 = f"{ticker}_{razina}_g3"
 
-            # ── G1: Intraday proboj ───────────────────────────────
-            if burza_otvorena and price is not None:
+            # ── G1: intraday (samo dok je burza otvorena) ─────────
+            if otvorena and price is not None:
                 if price >= razina * prag:
-                    prev_g1 = poslano.get(k1, {})
-                    if prev_g1.get("datum") != today_s:
+                    if poslano.get(k1, {}).get("datum") != today_s:
                         odmak = (price - razina) / razina * 100
-                        print(f"\n    G1: {price:.2f} (+{odmak:.1f}%)", end="")
-                        grupa1.append({"ticker": ticker, "cijena": price, "razina": razina})
-                        poslano[k1] = {"datum": today_s, "cijena": price,
-                                       "poslano": now_et.isoformat()}
+                        print(f"\n    G1: {price:.2f} ({odmak:+.1f}%)", end="")
+                        g1.append({"ticker": ticker, "cijena": price, "razina": razina})
+                        poslano[k1] = {"datum": today_s}
                 else:
                     if k1 in poslano and poslano[k1].get("datum") != today_s:
                         del poslano[k1]
 
-            # ── G2: Prođi kroz sve historical dane ───────────────
-            sent_g2_dates = set(poslano.get(k2, {}).get("datumi", []))
-
+            # ── G2: close iznad razine (zadnjih HISTORY_DAYS dana) ─
+            # Radi UVIJEK — i prije i nakon otvaranja
+            vec_poslano_g2 = set(poslano.get(k2, {}).get("datumi", []))
             for td in hist_days:
                 td_s = td.isoformat()
-                if td_s in sent_g2_dates:
+                if td_s in vec_poslano_g2:
                     continue
-                ohlc = historija.get(td_s)
+                ohlc = hist.get(td_s)
                 if not ohlc:
                     continue
-                close = ohlc["close"]
-                if close >= razina * prag:
-                    odmak = (close - razina) / razina * 100
-                    print(f"\n    G2: close={close:.2f} datum={td_s} (+{odmak:.1f}%)", end="")
-                    grupa2.append({"ticker": ticker, "close": close,
-                                   "razina": razina, "datum": td_s})
-                    sent_g2_dates.add(td_s)
+                if ohlc["close"] >= razina * prag:
+                    odmak = (ohlc["close"] - razina) / razina * 100
+                    print(f"\n    G2: close={ohlc['close']:.2f} {td_s} ({odmak:+.1f}%)", end="")
+                    g2.append({"ticker": ticker, "close": ohlc["close"],
+                               "razina": razina, "datum": td_s})
+                    vec_poslano_g2.add(td_s)
 
-            if sent_g2_dates:
-                poslano[k2] = {"datumi": sorted(sent_g2_dates)[-HISTORY_DAYS:]}
+            if vec_poslano_g2:
+                poslano[k2] = {"datumi": sorted(vec_poslano_g2)[-HISTORY_DAYS:]}
             elif k2 in poslano:
                 del poslano[k2]
 
-            # ── G3: Dan nakon G2 — open >= razine ────────────────
-            if burza_otvorila:
-                sent_g3_dates = set(poslano.get(k3, {}).get("datumi", []))
-                g2_datumi     = sorted(poslano.get(k2, {}).get("datumi", []))
+            # ── G3: open iznad razine dan nakon G2 ────────────────
+            # Radi UVIJEK — provjeravamo i prošle i današnji dan
+            g2_datumi     = sorted(poslano.get(k2, {}).get("datumi", []))
+            vec_poslano_g3 = set(poslano.get(k3, {}).get("datumi", []))
 
-                for g2_datum_s in g2_datumi:
-                    g2_datum  = date.fromisoformat(g2_datum_s)
-                    next_td   = next_trading_day(g2_datum)
-                    next_td_s = next_td.isoformat()
+            for g2_d_s in g2_datumi:
+                g2_d    = date.fromisoformat(g2_d_s)
+                next_d  = next_trading_day(g2_d)
+                next_s  = next_d.isoformat()
 
-                    if next_td_s in sent_g3_dates:
-                        continue
-                    if next_td > today:
-                        continue
+                if next_s in vec_poslano_g3:
+                    continue
+                if next_d > today:
+                    continue  # još nije stigao taj dan
 
-                    if next_td == today:
-                        open_next = open_
-                    else:
-                        ohlc_next = historija.get(next_td_s)
-                        open_next = ohlc_next["open"] if ohlc_next else None
+                # Dohvati open za next_d
+                if next_d == today:
+                    open_val = open_danas  # live ili iz FMP historije
+                else:
+                    open_val = hist.get(next_s, {}).get("open")
 
-                    if open_next is None:
-                        continue
+                if not open_val:
+                    continue
 
-                    if open_next >= razina * prag:
-                        odmak = (open_next - razina) / razina * 100
-                        print(f"\n    G3: open={open_next:.2f} datum={next_td_s} "
-                              f"(G2={g2_datum_s}) (+{odmak:.1f}%)", end="")
-                        grupa3.append({"ticker": ticker, "open": open_next,
-                                       "razina": razina, "datum": next_td_s})
-                        sent_g3_dates.add(next_td_s)
+                if open_val >= razina * prag:
+                    odmak = (open_val - razina) / razina * 100
+                    print(f"\n    G3: open={open_val:.2f} {next_s} "
+                          f"(G2={g2_d_s}) ({odmak:+.1f}%)", end="")
+                    g3.append({"ticker": ticker, "open": open_val,
+                               "razina": razina, "datum": next_s})
+                    vec_poslano_g3.add(next_s)
 
-                if sent_g3_dates:
-                    poslano[k3] = {"datumi": sorted(sent_g3_dates)[-HISTORY_DAYS:]}
+            if vec_poslano_g3:
+                poslano[k3] = {"datumi": sorted(vec_poslano_g3)[-HISTORY_DAYS:]}
 
             print()
 
@@ -429,10 +378,10 @@ def provjeri():
             print(f"\n  GRESKA {ticker}: {e}")
 
     # ── Pošalji ───────────────────────────────────────────────────
-    ukupno = len(grupa1) + len(grupa2) + len(grupa3)
+    ukupno = len(g1) + len(g2) + len(g3)
     if ukupno:
-        print(f"\nSaljem: G1={len(grupa1)}, G2={len(grupa2)}, G3={len(grupa3)}")
-        posalji_telegram(grupa1, grupa2, grupa3)
+        print(f"\nSaljem: G1={len(g1)}, G2={len(g2)}, G3={len(g3)}")
+        posalji_telegram(g1, g2, g3)
     else:
         print("Nema novih upozorenja.")
 
@@ -442,7 +391,14 @@ def provjeri():
 
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "test":
+    arg = sys.argv[1] if len(sys.argv) > 1 else ""
+    if arg == "test":
         test_telegram()
+    elif arg == "reset":
+        if os.path.exists(POSLANO_FILE):
+            os.remove(POSLANO_FILE)
+            print("Resetirano — poslano.json obrisan.")
+        else:
+            print("Nema što resetirati.")
     else:
         provjeri()
