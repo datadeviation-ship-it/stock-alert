@@ -1,5 +1,7 @@
 """
-stock_alert.py — Stock alert v7
+stock_alert.py — Stock alert v8
+
+ŠALJE SAMO GRUPU 3.
 
 LOGIKA:
 
@@ -18,6 +20,8 @@ G3 — PROBOJ + CLOSE + IDUĆI OPEN IZNAD RAZINE
 Dionica je ispunila G2, a idući trading dan otvorila iznad razine.
 Uvjet:
     next_open >= razina * (1 + PRAG_POSTO / 100)
+
+Telegram šalje SAMO G3.
 
 Pokretanje:
   python stock_alert.py
@@ -48,7 +52,10 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 # ─────────────────────────────────────────────────────────────
 
 PRAG_POSTO = 0.5
-HISTORY_DAYS = 15
+
+HISTORY_DAYS = 1
+
+TELEGRAM_MAX_LEN = 3500
 
 ET = zoneinfo.ZoneInfo("America/New_York")
 
@@ -92,7 +99,7 @@ DIONICE = [
     {"ticker": "NOW",   "razina": 106.60},
     {"ticker": "KLAC",  "razina": 1940.00},
     {"ticker": "LEA",   "razina": 141.40},
-    {"ticker": "DG",    "razina": 6.60},
+    {"ticker": "DG",    "razina": 116.60},
     {"ticker": "MET",   "razina": 85.30},
     {"ticker": "VRT",   "razina": 334.60},
     {"ticker": "PAYC",  "razina": 139.30},
@@ -312,7 +319,7 @@ def dohvati_quote(ticker):
 
 
 def dohvati_historiju(ticker):
-    start = datetime.now(ET).date() - timedelta(days=HISTORY_DAYS * 4)
+    start = datetime.now(ET).date() - timedelta(days=HISTORY_DAYS * 5)
 
     url = (
         "https://financialmodelingprep.com/stable/historical-price-eod/full"
@@ -350,13 +357,32 @@ def dohvati_historiju(ticker):
         return result
 
     except Exception as e:
-        print(f"  historija greska {ticker}: {e}")
+        print(f"  povijest greska {ticker}: {e}")
         return {}
 
 
 # ─────────────────────────────────────────────────────────────
 # TELEGRAM
 # ─────────────────────────────────────────────────────────────
+
+def razbij_poruku(text, max_len=TELEGRAM_MAX_LEN):
+    lines = text.splitlines(keepends=True)
+    chunks = []
+    current = ""
+
+    for line in lines:
+        if len(current) + len(line) > max_len:
+            if current.strip():
+                chunks.append(current)
+            current = line
+        else:
+            current += line
+
+    if current.strip():
+        chunks.append(current)
+
+    return chunks
+
 
 def posalji_telegram_poruku(text):
     if not TELEGRAM_TOKEN:
@@ -370,7 +396,7 @@ def posalji_telegram_poruku(text):
     params = urllib.parse.urlencode({
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
-        "parse_mode": "Markdown",
+        "disable_web_page_preview": "true",
     }).encode("utf-8")
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -393,56 +419,55 @@ def posalji_telegram_poruku(text):
         return False
 
 
-def format_alert(g1, g2, g3):
+def format_alert_g3(g3):
     now = datetime.now(ET).strftime("%d.%m.%Y %H:%M ET")
 
-    poruka = f"*STOCK ALERT* {now}\n"
+    poruka = "STOCK ALERT — GRUPA 3\n"
+    poruka += f"{now}\n"
+    poruka += f"Broj G3 alarma: {len(g3)}\n\n"
+    poruka += "Uvjet: proboj razine + close iznad razine + iduci trading dan open iznad razine\n\n"
 
-    if g1:
-        poruka += "\n*1) PROBOJ RAZINE*\n"
-        for u in g1:
-            odmak = (u["vrijednost"] - u["razina"]) / u["razina"] * 100
-            poruka += (
-                f"*{u['ticker']}* `{u['vrijednost']:.2f}` "
-                f"razina `{u['razina']:.2f}` "
-                f"{u['datum']} ({odmak:+.2f}%)\n"
-            )
+    for u in g3:
+        odmak = (u["open"] - u["razina"]) / u["razina"] * 100
 
-    if g2:
-        poruka += "\n*2) PROBOJ + CLOSE IZNAD*\n"
-        for u in g2:
-            odmak = (u["close"] - u["razina"]) / u["razina"] * 100
-            poruka += (
-                f"*{u['ticker']}* close `{u['close']:.2f}` "
-                f"high `{u['high']:.2f}` "
-                f"razina `{u['razina']:.2f}` "
-                f"{u['datum']} ({odmak:+.2f}%)\n"
-            )
-
-    if g3:
-        poruka += "\n*3) IDUĆI OPEN IZNAD*\n"
-        for u in g3:
-            odmak = (u["open"] - u["razina"]) / u["razina"] * 100
-            poruka += (
-                f"*{u['ticker']}* open `{u['open']:.2f}` "
-                f"razina `{u['razina']:.2f}` "
-                f"{u['datum']} nakon {u['g2_datum']} ({odmak:+.2f}%)\n"
-            )
+        poruka += (
+            f"{u['ticker']} | "
+            f"open {u['open']:.2f} | "
+            f"razina {u['razina']:.2f} | "
+            f"open datum {u['datum']} | "
+            f"G2 datum {u['g2_datum']} | "
+            f"{odmak:+.2f}%\n"
+        )
 
     return poruka
 
 
-def posalji_telegram(g1, g2, g3):
-    if not (g1 or g2 or g3):
+def posalji_telegram_g3(g3):
+    if not g3:
         return False
 
-    poruka = format_alert(g1, g2, g3)
-    return posalji_telegram_poruku(poruka)
+    poruka = format_alert_g3(g3)
+    dijelovi = razbij_poruku(poruka)
+
+    print(f"Telegram G3 poruka ima {len(poruka)} znakova.")
+    print(f"Saljem G3 u {len(dijelovi)} dijelova.")
+
+    sve_ok = True
+
+    for i, dio in enumerate(dijelovi, start=1):
+        header = f"G3 ALERT {i}/{len(dijelovi)}\n\n"
+        ok = posalji_telegram_poruku(header + dio)
+
+        if not ok:
+            sve_ok = False
+            break
+
+    return sve_ok
 
 
 def test_telegram():
     now = datetime.now(ET).strftime("%d.%m.%Y %H:%M ET")
-    text = f"*Stock Alert bot aktivan*\nTest poruka {now}"
+    text = f"Stock Alert bot aktivan\nTest poruka {now}"
     ok = posalji_telegram_poruku(text)
 
     if ok:
@@ -452,7 +477,7 @@ def test_telegram():
 
 
 # ─────────────────────────────────────────────────────────────
-# GLAVNA LOGIKA
+# MAIN LOGIKA
 # ─────────────────────────────────────────────────────────────
 
 def provjeri():
@@ -480,8 +505,8 @@ def provjeri():
 
     state = ucitaj_poslano()
 
-    g1_alerts = []
-    g2_alerts = []
+    g1_count = 0
+    g2_count = 0
     g3_alerts = []
 
     for d in DIONICE:
@@ -528,6 +553,7 @@ def provjeri():
 
         # ─────────────────────────────────────
         # G1 — završeni dani: high >= trigger
+        # Ne šalje se na Telegram, samo se pamti.
         # ─────────────────────────────────────
 
         for td in hist_days:
@@ -547,38 +573,26 @@ def provjeri():
                 continue
 
             if high_val >= trigger:
-                g1_alerts.append({
-                    "ticker": ticker,
-                    "vrijednost": high_val,
-                    "razina": razina,
-                    "datum": td_s,
-                })
-
                 g1_dates.add(td_s)
-
-                print(f"  G1: high {high_val:.2f} na {td_s}")
+                g1_count += 1
+                print(f"  G1 interno: high {high_val:.2f} na {td_s}")
 
         # ─────────────────────────────────────
         # G1 — danas live: price >= trigger
+        # Ne šalje se na Telegram, samo se pamti.
         # ─────────────────────────────────────
 
         if otvorena and price is not None:
             if price >= trigger and today_s not in g1_dates:
-                g1_alerts.append({
-                    "ticker": ticker,
-                    "vrijednost": price,
-                    "razina": razina,
-                    "datum": today_s,
-                })
-
                 g1_dates.add(today_s)
-
-                print(f"  G1 LIVE: price {price:.2f} danas")
+                g1_count += 1
+                print(f"  G1 LIVE interno: price {price:.2f} danas")
 
         state["g1"][k]["datumi"] = sorted(g1_dates)[-HISTORY_DAYS:]
 
         # ─────────────────────────────────────
         # G2 — high >= trigger i close >= trigger
+        # Ne šalje se na Telegram, samo se pamti.
         # ─────────────────────────────────────
 
         for td in hist_days:
@@ -599,22 +613,15 @@ def provjeri():
                 continue
 
             if high_val >= trigger and close_val >= trigger:
-                g2_alerts.append({
-                    "ticker": ticker,
-                    "high": high_val,
-                    "close": close_val,
-                    "razina": razina,
-                    "datum": td_s,
-                })
-
                 g2_dates.add(td_s)
-
-                print(f"  G2: high {high_val:.2f}, close {close_val:.2f} na {td_s}")
+                g2_count += 1
+                print(f"  G2 interno: high {high_val:.2f}, close {close_val:.2f} na {td_s}")
 
         state["g2"][k]["datumi"] = sorted(g2_dates)[-HISTORY_DAYS:]
 
         # ─────────────────────────────────────
         # G3 — nakon G2, idući trading day open >= trigger
+        # SAMO OVO IDE NA TELEGRAM.
         # ─────────────────────────────────────
 
         for g2_d_s in sorted(g2_dates):
@@ -647,18 +654,22 @@ def provjeri():
 
                 g3_dates.add(next_s)
 
-                print(f"  G3: open {open_val:.2f} na {next_s}, nakon G2 {g2_d_s}")
+                print(f"  G3 ALERT: open {open_val:.2f} na {next_s}, nakon G2 {g2_d_s}")
 
         state["g3"][k]["datumi"] = sorted(g3_dates)[-HISTORY_DAYS:]
 
-    ukupno = len(g1_alerts) + len(g2_alerts) + len(g3_alerts)
-
     print()
-    print(f"Rezultat: G1={len(g1_alerts)}, G2={len(g2_alerts)}, G3={len(g3_alerts)}, ukupno={ukupno}")
+    print(
+        f"Rezultat interno: "
+        f"novi G1={g1_count}, "
+        f"novi G2={g2_count}, "
+        f"novi G3={len(g3_alerts)}"
+    )
 
-    if ukupno:
-        print(f"Saljem Telegram: {ukupno} alarm(a)")
-        telegram_ok = posalji_telegram(g1_alerts, g2_alerts, g3_alerts)
+    if g3_alerts:
+        print(f"Saljem Telegram samo za G3: {len(g3_alerts)} alarm(a)")
+
+        telegram_ok = posalji_telegram_g3(g3_alerts)
 
         if telegram_ok:
             spremi_poslano(state)
@@ -666,14 +677,15 @@ def provjeri():
         else:
             print("Telegram nije poslan. State nije spremljen.")
     else:
-        print("Nema novih upozorenja.")
+        print("Nema novih G3 upozorenja.")
         spremi_poslano(state)
+        print("State spremljen bez Telegram slanja.")
 
     print(f"Gotovo: {datetime.now(ET).strftime('%H:%M:%S ET')}")
 
 
 # ─────────────────────────────────────────────────────────────
-# MAIN
+# ENTRY POINT
 # ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
