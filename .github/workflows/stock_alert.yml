@@ -2,7 +2,7 @@ name: Stock Alert
 
 on:
   schedule:
-    - cron: '35 13 * * 1-5'
+    - cron: '30,31,32,33,34,35 13,14 * * 1-5'
   workflow_dispatch:
 
 jobs:
