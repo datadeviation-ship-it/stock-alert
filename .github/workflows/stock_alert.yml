@@ -1,8 +1,9 @@
 name: Stock Alert
 
-on:
+  on:
   schedule:
-    - cron: '30,31,32,33,34,35 13,14 * * 1-5'
+    - cron: '31 13 * * 1-5'   # EDT (ljeto)
+    - cron: '31 14 * * 1-5'   # EST (zima)
   workflow_dispatch:
 
 jobs:
