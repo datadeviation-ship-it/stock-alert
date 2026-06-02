@@ -1,40 +1,33 @@
 """
-stock_alert.py — Stock alert v8
+stock_alert.py - G3 open alert 
 
 ŠALJE SAMO GRUPU 3.
 
-LOGIKA:
+CILJ:
+- Provjeriti odmah nakon otvaranja USA burze.
+- Alarm se šalje samo ako je:
+    1) prethodni trading dan imao G2:
+       high >= razina * prag
+       close >= razina * prag
+    2) današnji open je iznad razine/praga:
+       open >= razina * prag
 
-G1 — PROBOJ RAZINE
-Dionica je tijekom dana probila zadanu razinu.
-Za završene dane koristi se dnevni HIGH.
-Za današnji dan, dok je burza otvorena, koristi se live PRICE.
-
-G2 — PROBOJ + CLOSE IZNAD RAZINE
-Dionica je tijekom dana probila razinu i zatvorila iznad nje.
-Uvjet:
-    high >= razina * (1 + PRAG_POSTO / 100)
-    close >= razina * (1 + PRAG_POSTO / 100)
-
-G3 — PROBOJ + CLOSE + IDUĆI OPEN IZNAD RAZINE
-Dionica je ispunila G2, a idući trading dan otvorila iznad razine.
-Uvjet:
-    next_open >= razina * (1 + PRAG_POSTO / 100)
-
-Telegram šalje SAMO G3.
+Telegram poruka je jednostavna:
+Ticker | Razina | Open | Open vs razina
 
 Pokretanje:
   python stock_alert.py
   python stock_alert.py test
   python stock_alert.py reset
   python stock_alert.py debug
+  python stock_alert.py force
 """
 
 import urllib.request
 import urllib.parse
 import json
 import os
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, time as dtime
 import zoneinfo
 
 
@@ -51,15 +44,19 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 # SETTINGS
 # ─────────────────────────────────────────────────────────────
 
+# Ako želiš da uvjet bude čista razina bez dodatnog praga, stavi 0.0.
+# Trenutno ostavljam 0.5 jer je tako bilo u tvojoj G3 logici.
 PRAG_POSTO = 0.5
 
-HISTORY_DAYS = 1
+# Koliko minuta nakon otvaranja USA burze smije poslati alarm.
+# 09:30:00 — 09:35:00 ET
+OPEN_ALERT_WINDOW_MINUTES = 5
 
 TELEGRAM_MAX_LEN = 3500
 
 ET = zoneinfo.ZoneInfo("America/New_York")
 
-POSLANO_FILE = os.path.join(
+STATE_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "stock_alert_poslano.json"
 )
@@ -146,8 +143,10 @@ def _nth_weekday(year, month, weekday, n):
     while True:
         if d.weekday() == weekday:
             count += 1
+
             if count == n:
                 return d
+
         d += timedelta(days=1)
 
 
@@ -167,8 +166,10 @@ def us_holidays(year):
     def obs(d):
         if d.weekday() == 6:
             return d + timedelta(days=1)
+
         if d.weekday() == 5:
             return d - timedelta(days=1)
+
         return d
 
     h = set()
@@ -206,36 +207,26 @@ def is_trading_day(d):
     return d.weekday() < 5 and d not in us_holidays(d.year)
 
 
-def next_trading_day(d):
-    d += timedelta(days=1)
+def previous_trading_day(d):
+    d -= timedelta(days=1)
 
     while not is_trading_day(d):
-        d += timedelta(days=1)
+        d -= timedelta(days=1)
 
     return d
 
 
-def last_n_trading_days(n, before):
-    days = []
-    d = before - timedelta(days=1)
+def market_open_alert_window(now_et=None):
+    if now_et is None:
+        now_et = datetime.now(ET)
 
-    while len(days) < n:
-        if is_trading_day(d):
-            days.append(d)
-        d -= timedelta(days=1)
+    if not is_trading_day(now_et.date()):
+        return False
 
-    return sorted(days)
+    open_dt = datetime.combine(now_et.date(), dtime(9, 30), tzinfo=ET)
+    end_dt = open_dt + timedelta(minutes=OPEN_ALERT_WINDOW_MINUTES)
 
-
-def burza_je_otvorena():
-    from datetime import time as dtime
-
-    now = datetime.now(ET)
-
-    return (
-        is_trading_day(now.date())
-        and dtime(9, 30) <= now.time() <= dtime(16, 0)
-    )
+    return open_dt <= now_et <= end_dt
 
 
 # ─────────────────────────────────────────────────────────────
@@ -244,26 +235,26 @@ def burza_je_otvorena():
 
 def default_state():
     return {
-        "g1": {},
-        "g2": {},
-        "g3": {},
+        "sent_g3": {}
     }
 
 
-def ucitaj_poslano():
-    if not os.path.exists(POSLANO_FILE):
+def key_for(ticker, razina):
+    return f"{ticker}_{razina:.4f}"
+
+
+def load_state():
+    if not os.path.exists(STATE_FILE):
         return default_state()
 
     try:
-        with open(POSLANO_FILE, "r", encoding="utf-8") as f:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         if not isinstance(data, dict):
             return default_state()
 
-        data.setdefault("g1", {})
-        data.setdefault("g2", {})
-        data.setdefault("g3", {})
+        data.setdefault("sent_g3", {})
 
         return data
 
@@ -272,65 +263,90 @@ def ucitaj_poslano():
         return default_state()
 
 
-def spremi_poslano(state):
-    with open(POSLANO_FILE, "w", encoding="utf-8") as f:
+def save_state(state):
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
 
 
-def key_for(ticker, razina):
-    return f"{ticker}_{razina:.4f}"
+def already_sent_today(state, key, today_s):
+    sent_g3 = state.get("sent_g3", {})
+    if today_s in sent_g3.get(key, []):
+        return True
+
+    # Kompatibilnost sa starim state formatom ako postoji.
+    old_g3 = state.get("g3", {})
+    old_item = old_g3.get(key, {})
+
+    if isinstance(old_item, dict):
+        old_dates = old_item.get("datumi", [])
+        if today_s in old_dates:
+            return True
+
+    return False
+
+
+def mark_sent_today(state, key, today_s):
+    state.setdefault("sent_g3", {})
+    state["sent_g3"].setdefault(key, [])
+
+    if today_s not in state["sent_g3"][key]:
+        state["sent_g3"][key].append(today_s)
+
+    # Čuvaj samo zadnjih 20 zapisa po ticker/razina kombinaciji.
+    state["sent_g3"][key] = sorted(state["sent_g3"][key])[-20:]
 
 
 # ─────────────────────────────────────────────────────────────
 # FMP
 # ─────────────────────────────────────────────────────────────
 
-def dohvati_quote(ticker):
+def http_get_json(url, timeout=20):
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+def fetch_quote(ticker):
     url = (
         "https://financialmodelingprep.com/stable/quote"
-        f"?symbol={ticker}&apikey={FMP_API_KEY}"
+        f"?symbol={urllib.parse.quote(ticker)}&apikey={FMP_API_KEY}"
     )
 
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        data = http_get_json(url, timeout=15)
 
-        with urllib.request.urlopen(req, timeout=15) as r:
-            data = json.loads(r.read())
+        if not data or not isinstance(data, list):
+            return None
 
-        if data and isinstance(data, list):
-            q = data[0]
+        q = data[0]
 
-            price = q.get("price")
-            open_ = q.get("open")
+        price = q.get("price")
+        open_ = q.get("open")
 
-            if price is None:
-                return None
+        if price is None and open_ is None:
+            return None
 
-            return {
-                "price": round(float(price), 4),
-                "open": round(float(open_ or 0), 4),
-            }
-
-        return None
+        return {
+            "price": float(price) if price is not None else None,
+            "open": float(open_) if open_ is not None else None,
+        }
 
     except Exception as e:
-        print(f"  quote greska {ticker}: {e}")
+        print(f"  quote greška {ticker}: {e}")
         return None
 
 
-def dohvati_historiju(ticker):
-    start = datetime.now(ET).date() - timedelta(days=HISTORY_DAYS * 5)
-
+def fetch_eod_history(ticker, from_date):
     url = (
         "https://financialmodelingprep.com/stable/historical-price-eod/full"
-        f"?symbol={ticker}&from={start.isoformat()}&apikey={FMP_API_KEY}"
+        f"?symbol={urllib.parse.quote(ticker)}"
+        f"&from={from_date.isoformat()}"
+        f"&apikey={FMP_API_KEY}"
     )
 
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-
-        with urllib.request.urlopen(req, timeout=20) as r:
-            data = json.loads(r.read())
+        data = http_get_json(url, timeout=20)
 
         if isinstance(data, dict):
             records = data.get("historical", data.get("data", []))
@@ -348,16 +364,16 @@ def dohvati_historiju(ticker):
                 continue
 
             result[ds] = {
-                "open": round(float(row.get("open", 0) or 0), 4),
-                "high": round(float(row.get("high", 0) or 0), 4),
-                "low": round(float(row.get("low", 0) or 0), 4),
-                "close": round(float(row.get("close", 0) or 0), 4),
+                "open": float(row.get("open", 0) or 0),
+                "high": float(row.get("high", 0) or 0),
+                "low": float(row.get("low", 0) or 0),
+                "close": float(row.get("close", 0) or 0),
             }
 
         return result
 
     except Exception as e:
-        print(f"  povijest greska {ticker}: {e}")
+        print(f"  povijest greška {ticker}: {e}")
         return {}
 
 
@@ -365,7 +381,7 @@ def dohvati_historiju(ticker):
 # TELEGRAM
 # ─────────────────────────────────────────────────────────────
 
-def razbij_poruku(text, max_len=TELEGRAM_MAX_LEN):
+def split_message(text, max_len=TELEGRAM_MAX_LEN):
     lines = text.splitlines(keepends=True)
     chunks = []
     current = ""
@@ -384,13 +400,13 @@ def razbij_poruku(text, max_len=TELEGRAM_MAX_LEN):
     return chunks
 
 
-def posalji_telegram_poruku(text):
+def send_telegram_message(text):
     if not TELEGRAM_TOKEN:
-        print("Telegram greska: TELEGRAM_TOKEN nije postavljen.")
+        print("Telegram greška: TELEGRAM_TOKEN nije postavljen.")
         return False
 
     if not TELEGRAM_CHAT_ID:
-        print("Telegram greska: TELEGRAM_CHAT_ID nije postavljen.")
+        print("Telegram greška: TELEGRAM_CHAT_ID nije postavljen.")
         return False
 
     params = urllib.parse.urlencode({
@@ -405,70 +421,67 @@ def posalji_telegram_poruku(text):
         req = urllib.request.Request(url, data=params, method="POST")
 
         with urllib.request.urlopen(req, timeout=15) as r:
-            odgovor = json.loads(r.read())
+            response = json.loads(r.read())
 
-        if odgovor.get("ok"):
+        if response.get("ok"):
             print("Telegram poruka poslana.")
             return True
 
-        print(f"Telegram greska: {odgovor}")
+        print(f"Telegram greška: {response}")
         return False
 
     except Exception as e:
-        print(f"Telegram greska: {e}")
+        print(f"Telegram greška: {e}")
         return False
 
 
-def format_alert_g3(g3):
-    now = datetime.now(ET).strftime("%d.%m.%Y %H:%M ET")
+def format_simple_g3_alert(alerts):
+    now_et = datetime.now(ET).strftime("%d.%m.%Y %H:%M ET")
 
-    poruka = "STOCK ALERT — GRUPA 3\n"
-    poruka += f"{now}\n"
-    poruka += f"Broj G3 alarma: {len(g3)}\n\n"
-    poruka += "Uvjet: proboj razine + close iznad razine + iduci trading dan open iznad razine\n\n"
+    lines = []
+    lines.append("G3 ALERT — USA OPEN")
+    lines.append(now_et)
+    lines.append("")
+    lines.append("Ticker | Razina | Open | Open vs razina")
 
-    for u in g3:
-        odmak = (u["open"] - u["razina"]) / u["razina"] * 100
-
-        poruka += (
-            f"{u['ticker']} | "
-            f"open {u['open']:.2f} | "
-            f"razina {u['razina']:.2f} | "
-            f"open datum {u['datum']} | "
-            f"G2 datum {u['g2_datum']} | "
-            f"{odmak:+.2f}%\n"
+    for a in alerts:
+        lines.append(
+            f"{a['ticker']} | "
+            f"{a['razina']:.2f} | "
+            f"{a['open']:.2f} | "
+            f"{a['open_vs_razina_pct']:+.2f}%"
         )
 
-    return poruka
+    return "\n".join(lines)
 
 
-def posalji_telegram_g3(g3):
-    if not g3:
+def send_g3_alerts(alerts):
+    if not alerts:
         return False
 
-    poruka = format_alert_g3(g3)
-    dijelovi = razbij_poruku(poruka)
+    message = format_simple_g3_alert(alerts)
+    chunks = split_message(message)
 
-    print(f"Telegram G3 poruka ima {len(poruka)} znakova.")
-    print(f"Saljem G3 u {len(dijelovi)} dijelova.")
+    print(f"Telegram poruka ima {len(message)} znakova.")
+    print(f"Šaljem u {len(chunks)} dijelova.")
 
-    sve_ok = True
+    all_ok = True
 
-    for i, dio in enumerate(dijelovi, start=1):
-        header = f"G3 ALERT {i}/{len(dijelovi)}\n\n"
-        ok = posalji_telegram_poruku(header + dio)
+    for chunk in chunks:
+        ok = send_telegram_message(chunk)
 
         if not ok:
-            sve_ok = False
+            all_ok = False
             break
 
-    return sve_ok
+    return all_ok
 
 
 def test_telegram():
     now = datetime.now(ET).strftime("%d.%m.%Y %H:%M ET")
     text = f"Stock Alert bot aktivan\nTest poruka {now}"
-    ok = posalji_telegram_poruku(text)
+
+    ok = send_telegram_message(text)
 
     if ok:
         print("Test poruka poslana.")
@@ -477,209 +490,144 @@ def test_telegram():
 
 
 # ─────────────────────────────────────────────────────────────
-# MAIN LOGIKA
+# MAIN LOGIKA — SAMO G3
 # ─────────────────────────────────────────────────────────────
 
-def provjeri():
+def provjeri(force=False):
     now_et = datetime.now(ET)
     today = now_et.date()
     today_s = today.isoformat()
 
     print(f"Provjera: {now_et.strftime('%d.%m.%Y %H:%M:%S ET')}")
-    print(f"State file: {POSLANO_FILE}")
+    print(f"State file: {STATE_FILE}")
     debug_env()
 
     if not FMP_API_KEY:
         print("FMP_API_KEY nije postavljen. Prekid.")
         return
 
-    otvorena = burza_je_otvorena()
-    hist_days = last_n_trading_days(HISTORY_DAYS, today)
-    prag = 1 + PRAG_POSTO / 100
+    if not force and not market_open_alert_window(now_et):
+        print(
+            "Nije vrijeme za G3 open provjeru. "
+            f"Bot šalje samo u prvih {OPEN_ALERT_WINDOW_MINUTES} minuta nakon USA opena."
+        )
+        print("Nema Telegram slanja.")
+        return
 
-    print(
-        f"Burza otvorena: {'DA' if otvorena else 'NE'} | "
-        f"History window: {hist_days[0]} — {hist_days[-1]}"
-    )
+    if not is_trading_day(today):
+        print("Danas nije US trading day. Prekid.")
+        return
+
+    prev_day = previous_trading_day(today)
+    prev_s = prev_day.isoformat()
+
+    print(f"Trading day: {today_s}")
+    print(f"Prethodni trading day za G2: {prev_s}")
+    print(f"Alert window: 09:30–09:35 ET")
     print()
 
-    state = ucitaj_poslano()
+    state = load_state()
 
-    g1_count = 0
-    g2_count = 0
-    g3_alerts = []
+    alerts = []
+    checked = 0
+    g2_ok_count = 0
+    already_sent_count = 0
 
-    for d in DIONICE:
-        ticker = d["ticker"]
-        razina = float(d["razina"])
+    history_from = prev_day - timedelta(days=7)
+    prag = 1 + PRAG_POSTO / 100
+
+    for item in DIONICE:
+        ticker = item["ticker"].strip().upper()
+        razina = float(item["razina"])
         trigger = razina * prag
         k = key_for(ticker, razina)
 
-        hist = dohvati_historiju(ticker)
-        quote = dohvati_quote(ticker) if otvorena else None
+        if already_sent_today(state, k, today_s):
+            already_sent_count += 1
+            print(f"{ticker:<8} već poslano danas — preskačem.")
+            continue
 
-        price = quote["price"] if quote else None
-        open_danas = quote["open"] if quote and quote.get("open") else hist.get(today_s, {}).get("open")
+        checked += 1
 
-        price_s = f"{price:.2f}" if price is not None else "—"
-        open_s = f"{open_danas:.2f}" if open_danas is not None else "—"
+        hist = fetch_eod_history(ticker, history_from)
+        prev_ohlc = hist.get(prev_s)
+
+        if not prev_ohlc:
+            print(f"{ticker:<8} nema EOD podatke za {prev_s}")
+            continue
+
+        prev_high = prev_ohlc.get("high")
+        prev_close = prev_ohlc.get("close")
+
+        if prev_high is None or prev_close is None:
+            print(f"{ticker:<8} nepotpuni EOD podaci za {prev_s}")
+            continue
+
+        # G2 uvjet: prethodni dan high + close iznad triggera.
+        g2_ok = prev_high >= trigger and prev_close >= trigger
+
+        if not g2_ok:
+            print(
+                f"{ticker:<8} G2 NE | "
+                f"razina={razina:.2f} trigger={trigger:.2f} "
+                f"prev_high={prev_high:.2f} prev_close={prev_close:.2f}"
+            )
+            continue
+
+        g2_ok_count += 1
+
+        quote = fetch_quote(ticker)
+
+        if not quote:
+            print(f"{ticker:<8} G2 DA, ali nema quote/open podatka.")
+            continue
+
+        open_today = quote.get("open")
+
+        if open_today is None or open_today <= 0:
+            print(f"{ticker:<8} G2 DA, ali open nije dostupan.")
+            continue
+
+        # G3 uvjet: današnji open iznad triggera.
+        g3_ok = open_today >= trigger
+
+        open_vs_razina_pct = (open_today - razina) / razina * 100
 
         print(
-            f"{ticker:<8} razina={razina:.2f} trigger={trigger:.2f} "
-            f"price={price_s} open={open_s}"
+            f"{ticker:<8} G2 DA | "
+            f"open={open_today:.2f} razina={razina:.2f} "
+            f"open_vs_razina={open_vs_razina_pct:+.2f}% "
+            f"G3={'DA' if g3_ok else 'NE'}"
         )
 
-        state["g1"].setdefault(k, {
-            "ticker": ticker,
-            "razina": razina,
-            "datumi": [],
-        })
+        if g3_ok:
+            alerts.append({
+                "ticker": ticker,
+                "razina": razina,
+                "open": open_today,
+                "open_vs_razina_pct": open_vs_razina_pct,
+            })
 
-        state["g2"].setdefault(k, {
-            "ticker": ticker,
-            "razina": razina,
-            "datumi": [],
-        })
-
-        state["g3"].setdefault(k, {
-            "ticker": ticker,
-            "razina": razina,
-            "datumi": [],
-        })
-
-        g1_dates = set(state["g1"][k].get("datumi", []))
-        g2_dates = set(state["g2"][k].get("datumi", []))
-        g3_dates = set(state["g3"][k].get("datumi", []))
-
-        # ─────────────────────────────────────
-        # G1 — završeni dani: high >= trigger
-        # Ne šalje se na Telegram, samo se pamti.
-        # ─────────────────────────────────────
-
-        for td in hist_days:
-            td_s = td.isoformat()
-
-            if td_s in g1_dates:
-                continue
-
-            ohlc = hist.get(td_s)
-
-            if not ohlc:
-                continue
-
-            high_val = ohlc.get("high")
-
-            if high_val is None:
-                continue
-
-            if high_val >= trigger:
-                g1_dates.add(td_s)
-                g1_count += 1
-                print(f"  G1 interno: high {high_val:.2f} na {td_s}")
-
-        # ─────────────────────────────────────
-        # G1 — danas live: price >= trigger
-        # Ne šalje se na Telegram, samo se pamti.
-        # ─────────────────────────────────────
-
-        if otvorena and price is not None:
-            if price >= trigger and today_s not in g1_dates:
-                g1_dates.add(today_s)
-                g1_count += 1
-                print(f"  G1 LIVE interno: price {price:.2f} danas")
-
-        state["g1"][k]["datumi"] = sorted(g1_dates)[-HISTORY_DAYS:]
-
-        # ─────────────────────────────────────
-        # G2 — high >= trigger i close >= trigger
-        # Ne šalje se na Telegram, samo se pamti.
-        # ─────────────────────────────────────
-
-        for td in hist_days:
-            td_s = td.isoformat()
-
-            if td_s in g2_dates:
-                continue
-
-            ohlc = hist.get(td_s)
-
-            if not ohlc:
-                continue
-
-            high_val = ohlc.get("high")
-            close_val = ohlc.get("close")
-
-            if high_val is None or close_val is None:
-                continue
-
-            if high_val >= trigger and close_val >= trigger:
-                g2_dates.add(td_s)
-                g2_count += 1
-                print(f"  G2 interno: high {high_val:.2f}, close {close_val:.2f} na {td_s}")
-
-        state["g2"][k]["datumi"] = sorted(g2_dates)[-HISTORY_DAYS:]
-
-        # ─────────────────────────────────────
-        # G3 — nakon G2, idući trading day open >= trigger
-        # SAMO OVO IDE NA TELEGRAM.
-        # ─────────────────────────────────────
-
-        for g2_d_s in sorted(g2_dates):
-            g2_d = date.fromisoformat(g2_d_s)
-            next_d = next_trading_day(g2_d)
-            next_s = next_d.isoformat()
-
-            if next_s in g3_dates:
-                continue
-
-            if next_d > today:
-                continue
-
-            if next_d == today:
-                open_val = open_danas
-            else:
-                open_val = hist.get(next_s, {}).get("open")
-
-            if open_val is None:
-                continue
-
-            if open_val >= trigger:
-                g3_alerts.append({
-                    "ticker": ticker,
-                    "open": open_val,
-                    "razina": razina,
-                    "datum": next_s,
-                    "g2_datum": g2_d_s,
-                })
-
-                g3_dates.add(next_s)
-
-                print(f"  G3 ALERT: open {open_val:.2f} na {next_s}, nakon G2 {g2_d_s}")
-
-        state["g3"][k]["datumi"] = sorted(g3_dates)[-HISTORY_DAYS:]
+            mark_sent_today(state, k, today_s)
 
     print()
-    print(
-        f"Rezultat interno: "
-        f"novi G1={g1_count}, "
-        f"novi G2={g2_count}, "
-        f"novi G3={len(g3_alerts)}"
-    )
+    print(f"Provjereno: {checked}")
+    print(f"G2 od jučer: {g2_ok_count}")
+    print(f"Već poslano danas: {already_sent_count}")
+    print(f"Novi G3 alarmi: {len(alerts)}")
+    print()
 
-    if g3_alerts:
-        print(f"Saljem Telegram samo za G3: {len(g3_alerts)} alarm(a)")
+    if alerts:
+        ok = send_g3_alerts(alerts)
 
-        telegram_ok = posalji_telegram_g3(g3_alerts)
-
-        if telegram_ok:
-            spremi_poslano(state)
+        if ok:
+            save_state(state)
             print("State spremljen.")
         else:
-            print("Telegram nije poslan. State nije spremljen.")
+            print("Telegram nije poslan. State NIJE spremljen.")
     else:
-        print("Nema novih G3 upozorenja.")
-        spremi_poslano(state)
-        print("State spremljen bez Telegram slanja.")
+        save_state(state)
+        print("Nema novih G3 alarma. State spremljen.")
 
     print(f"Gotovo: {datetime.now(ET).strftime('%H:%M:%S ET')}")
 
@@ -697,8 +645,8 @@ if __name__ == "__main__":
         test_telegram()
 
     elif arg == "reset":
-        if os.path.exists(POSLANO_FILE):
-            os.remove(POSLANO_FILE)
+        if os.path.exists(STATE_FILE):
+            os.remove(STATE_FILE)
             print("Resetirano — stock_alert_poslano.json obrisan.")
         else:
             print("Nema što resetirati.")
@@ -706,5 +654,8 @@ if __name__ == "__main__":
     elif arg == "debug":
         debug_env()
 
+    elif arg == "force":
+        provjeri(force=True)
+
     else:
-        provjeri()
+        provjeri(force=False)
