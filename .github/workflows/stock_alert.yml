@@ -1,22 +1,18 @@
 name: Stock Alert
-
-  on:
+on:
   schedule:
-    - cron: '31 13 * * 1-5'   # EDT (ljeto)
-    - cron: '31 14 * * 1-5'   # EST (zima)
+    - cron: '31 13 * * 1-5'
+    - cron: '31 14 * * 1-5'
   workflow_dispatch:
-
 jobs:
   provjeri:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Postavi Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Pokreni provjeru
         env:
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
@@ -25,5 +21,5 @@ jobs:
         run: |
           echo "FMP key duljina: ${#FMP_API_KEY}"
           echo "Telegram token duljina: ${#TELEGRAM_TOKEN}"
-          echo "Chat ID: $TELEGRAM_CHAT_ID"
-          python stock_alert.py 
+          echo "Chat ID: ***"
+          python stock_alert.py
