@@ -50,7 +50,7 @@ PRAG_POSTO = 0.5
 
 # Koliko minuta nakon otvaranja USA burze smije poslati alarm.
 # 09:30:00 — 09:35:00 ET
-OPEN_ALERT_WINDOW_MINUTES = 5
+OPEN_ALERT_WINDOW_MINUTES = 20
 
 TELEGRAM_MAX_LEN = 3500
 
