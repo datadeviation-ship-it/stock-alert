@@ -39,7 +39,7 @@ jobs:
           echo "FMP key duljina: ${#FMP_API_KEY}"
           echo "Telegram token duljina: ${#TELEGRAM_TOKEN}"
           echo "Chat ID: ***"
-          python stock_alert.py force
+          python stock_alert.py 
 
       - name: Spremi state file
         run: |
