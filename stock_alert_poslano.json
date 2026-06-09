@@ -1,0 +1,25 @@
+{
+  "sent_g3": {
+    "LLY_1122.0000": [
+      "2026-06-09"
+    ],
+    "MAC_23.0000": [
+      "2026-06-09"
+    ],
+    "VNO_35.0000": [
+      "2026-06-09"
+    ]
+  },
+  "open_checks": {
+    "2026-06-09": {
+      "status": "checked",
+      "checked_at_et": "2026-06-09 06:52:12 ET",
+      "checked": 34,
+      "valid_prev_eod_count": 32,
+      "g2_ok_count": 4,
+      "open_valid_count": 4,
+      "alerts_count": 3,
+      "note": "Open provjera uspješno završena."
+    }
+  }
+}
