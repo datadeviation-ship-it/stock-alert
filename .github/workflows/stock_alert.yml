@@ -1,22 +1,35 @@
 name: Stock Alert
+
 on:
   schedule:
-    # USA market open - ljetno računanje vremena: 09:32 ET = 13:32 UTC
-    - cron: '32 13 * * 1-5'
+    # Ljetno računanje vremena:
+    # 09:32, 09:37, 09:42, 09:47 ET = 13:32, 13:37, 13:42, 13:47 UTC
+    - cron: '32,37,42,47 13 * * 1-5'
 
-    # USA market open - zimsko računanje vremena: 09:32 ET = 14:32 UTC
-    - cron: '32 14 * * 1-5'
+    # Zimsko računanje vremena:
+    # 09:32, 09:37, 09:42, 09:47 ET = 14:32, 14:37, 14:42, 14:47 UTC
+    - cron: '32,37,42,47 14 * * 1-5'
 
   workflow_dispatch:
+
+permissions:
+  contents: write
+
 jobs:
   provjeri:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Postavi Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Pokreni provjeru
         env:
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
@@ -27,3 +40,22 @@ jobs:
           echo "Telegram token duljina: ${#TELEGRAM_TOKEN}"
           echo "Chat ID: ***"
           python stock_alert.py
+
+      - name: Spremi state file
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          if [ -f stock_alert_poslano.json ]; then
+            git add stock_alert_poslano.json
+
+            if git diff --cached --quiet; then
+              echo "Nema promjene u state fileu."
+            else
+              git commit -m "Update stock alert state"
+              git pull --rebase origin main || true
+              git push
+            fi
+          else
+            echo "Nema state filea za spremiti."
+          fi
