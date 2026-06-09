@@ -509,7 +509,7 @@ def provjeri(force=False):
 
     print(f"Trading day: {today_s}")
     print(f"Prethodni trading day za G2: {prev_s}")
-    print(f"Alert window: 09:30–09:35 ET")
+    print(f"Alert window: 09:30–09:{30 + OPEN_ALERT_WINDOW_MINUTES:02d} ET")
     print()
 
     state = load_state()
@@ -612,11 +612,18 @@ def provjeri(force=False):
         else:
             print("Telegram nije poslan. State NIJE spremljen.")
     else:
+        status_msg = (
+            "G3 OPEN CHECK — nema novih alarma\n"
+            f"Datum: {today_s}\n"
+            f"Provjereno: {checked}\n"
+            f"G2 od jučer: {g2_ok_count}\n"
+            f"Već poslano danas: {already_sent_count}\n"
+            f"Novi G3 alarmi: 0"
+        )
+
+        send_telegram_message(status_msg)
         save_state(state)
-        print("Nema novih G3 alarma. State spremljen.")
-
-    print(f"Gotovo: {datetime.now(ET).strftime('%H:%M:%S ET')}")
-
+        print("Nema novih G3 alarma. Status poslan na Telegram. State spremljen.")
 
 # ─────────────────────────────────────────────────────────────
 # ENTRY POINT
