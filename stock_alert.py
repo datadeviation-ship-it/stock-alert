@@ -70,7 +70,7 @@ STATE_FILE = os.path.join(
 # ─────────────────────────────────────────────────────────────
 
 DIONICE = [
-    {"ticker": "VRSN", "razina": 307.00},
+    {"ticker": "PPC", "razina": 28.90},
     {"ticker": "RDDT", "razina": 183.00},
     {"ticker": "CAT", "razina": 931.00},
     {"ticker": "FTNT", "razina": 148.00},
