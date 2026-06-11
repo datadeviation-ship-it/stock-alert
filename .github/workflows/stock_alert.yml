@@ -2,11 +2,11 @@ name: Stock Alert
 
 on:
   schedule:
-    # US market open tijekom ljetnog računanja vremena
-    - cron: '32 13 * * 1-5'
+    # Ljeto: 09:32–09:47 ET = 13:32–13:47 UTC
+    - cron: '32,37,42,47 13 * * 1-5'
 
-    # US market open tijekom zimskog računanja vremena
-    - cron: '32 14 * * 1-5'
+    # Zima: 09:32–09:47 ET = 14:32–14:47 UTC
+    - cron: '32,37,42,47 14 * * 1-5'
 
   workflow_dispatch:
 
