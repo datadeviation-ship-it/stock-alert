@@ -2,13 +2,15 @@ name: Stock Alert
 
 on:
   schedule:
-    # Ljeto: 09:32–09:47 ET = 13:32–13:47 UTC
+    # Ljeto EDT: 09:32–09:47 ET = 13:32–13:47 UTC
     - cron: '32,37,42,47 13 * * 1-5'
-
-    # Zima: 09:32–09:47 ET = 14:32–14:47 UTC
+    # Zima EST: 09:32–09:47 ET = 14:32–14:47 UTC
     - cron: '32,37,42,47 14 * * 1-5'
-
   workflow_dispatch:
+
+concurrency:
+  group: stock-alert-daily
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -16,7 +18,6 @@ permissions:
 jobs:
   provjeri:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -37,21 +38,19 @@ jobs:
           echo "FMP key duljina: ${#FMP_API_KEY}"
           echo "Telegram token duljina: ${#TELEGRAM_TOKEN}"
           echo "Chat ID: ***"
-          python stock_alert.py 
+          python stock_alert.py
 
       - name: Spremi state file
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-
           if [ -f stock_alert_poslano.json ]; then
             git add stock_alert_poslano.json
-
             if git diff --cached --quiet; then
               echo "Nema promjene u state fileu."
             else
               git commit -m "Update stock alert state"
-              git pull --rebase origin main || true
+              git pull --rebase origin main
               git push
             fi
           else
