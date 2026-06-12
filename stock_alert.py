@@ -53,7 +53,7 @@ PRAG_POSTO = 0.5
 
 # Koliko minuta nakon otvaranja USA burze smije napraviti open provjeru.
 # 20 znači 09:30–09:50 ET.
-OPEN_ALERT_WINDOW_MINUTES = 20
+OPEN_ALERT_WINDOW_MINUTES = 45
 
 TELEGRAM_MAX_LEN = 3500
 
