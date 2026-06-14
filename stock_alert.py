@@ -180,17 +180,13 @@ def market_open_alert_window(now_et=None):
         return False
 
     open_dt = datetime.combine(now_et.date(), dtime(9, 30), tzinfo=ET)
-    end_dt = open_dt + timedelta(minutes=OPEN_ALERT_WINDOW_MINUTES)
+    close_dt = datetime.combine(now_et.date(), dtime(16, 0), tzinfo=ET)
 
-    return open_dt <= now_et <= end_dt
+    return open_dt <= now_et <= close_dt
 
 
 def open_window_text():
-    end_minute_total = 30 + OPEN_ALERT_WINDOW_MINUTES
-    end_hour = 9 + end_minute_total // 60
-    end_minute = end_minute_total % 60
-    return f"09:30–{end_hour:02d}:{end_minute:02d} ET"
-
+    return "09:30–16:00 ET"
 
 # ─────────────────────────────────────────────────────────────
 # STATE
@@ -551,8 +547,8 @@ def provjeri(force=False):
 
     if not force and not market_open_alert_window(now_et):
         print(
-            "Nije vrijeme za G3 open provjeru. "
-            f"Bot radi samo u prozoru {open_window_text()}."
+             "Nije vrijeme za G3 open provjeru. "
+             "Bot radi nakon USA opena, od 09:30 do 16:00 ET."
         )
         print("Nema Telegram slanja.")
         return
