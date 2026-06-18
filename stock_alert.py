@@ -1,30 +1,17 @@
 """
-stock_alert.py - G3 open alert
-
-ŠALJE GRUPU 3 + STATUS PORUKU.
+stock_alert.py
 
 CILJ:
-- Provjeriti nakon otvaranja USA burze.
+- Provjeriti samo open price nakon otvaranja USA burze.
 - Alarm se šalje samo ako je:
-    1) prethodni trading dan imao G2:
-       high >= razina * prag
-       close >= razina * prag
-    2) današnji open je iznad razine/praga:
-       open >= razina * prag
+    1) prethodni trading day close >= zadana razina
+    2) današnji open >= zadana razina
 
-VAŽNO:
-- Ako je open provjera za današnji trading dan već uspješno napravljena,
-  skripta više ne provjerava isti dan.
-- Ako FMP još nema open podatke za G2 kandidate, dan se NE označava kao provjeren,
-  kako bi kasniji GitHub cron mogao pokušati ponovno.
-- Ako nema novih G3 alarma, šalje se status poruka na Telegram.
-
-Pokretanje:
-  python stock_alert.py
-  python stock_alert.py test
-  python stock_alert.py reset
-  python stock_alert.py debug
-  python stock_alert.py force
+NEMA:
+- prethodnog high uvjeta
+- G2/G3 logike
+- dodatnog praga 0.5 %
+- status poruke ako nema alarma
 """
 
 import urllib.request
@@ -35,29 +22,27 @@ from datetime import datetime, date, timedelta, time as dtime
 import zoneinfo
 
 
-# ─────────────────────────────────────────────────────────────
+# ============================================================
 # ENV
-# ─────────────────────────────────────────────────────────────
+# ============================================================
 
 FMP_API_KEY = os.environ.get("FMP_API_KEY", "").strip()
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
 
-# ─────────────────────────────────────────────────────────────
+# ============================================================
 # SETTINGS
-# ─────────────────────────────────────────────────────────────
-
-# Ako želiš čistu razinu bez dodatnog praga, stavi 0.0.
-PRAG_POSTO = 0.5
-
-# Koliko minuta nakon otvaranja USA burze smije napraviti open provjeru.
-# 20 znači 09:30–09:50 ET.
-OPEN_ALERT_WINDOW_MINUTES = 45
-
-TELEGRAM_MAX_LEN = 3500
+# ============================================================
 
 ET = zoneinfo.ZoneInfo("America/New_York")
+ZAGREB = zoneinfo.ZoneInfo("Europe/Zagreb")
+
+# Provjera samo nakon otvaranja tržišta.
+# 20 znači 09:30–09:50 ET, što je ljeti 15:30–15:50 Zagreb.
+OPEN_ALERT_WINDOW_MINUTES = 20
+
+TELEGRAM_MAX_LEN = 3500
 
 STATE_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -65,51 +50,63 @@ STATE_FILE = os.path.join(
 )
 
 
-# ─────────────────────────────────────────────────────────────
+# ============================================================
 # DIONICE
-# ─────────────────────────────────────────────────────────────
+# ============================================================
 
 DIONICE = [
-    {"ticker": "PPC", "razina": 30.30},
-    {"ticker": "T", "razina": 28.00},
-    {"ticker": "VZ", "razina": 48.50},
-    {"ticker": "BAC", "razina": 56.20},
-    {"ticker": "NN", "razina": 24.00},
-    {"ticker": "TER", "razina": 421.00},
-    {"ticker": "CAT", "razina": 931.00},
-    {"ticker": "O", "razina": 63.00},
-    {"ticker": "ALGT", "razina": 62.00},
-    {"ticker": "AMGN", "razina": 355.00},
-    {"ticker": "FCX", "razina": 71.00},
-    {"ticker": "ELVN", "razina": 46.30},
-    {"ticker": "CLF", "razina": 15.20},
-    {"ticker": "ROG", "razina": 155.00},
-    {"ticker": "LEN", "razina": 97.00},
-    {"ticker": "IT", "razina": 171.50},
-    {"ticker": "TRV", "razina": 310.00},
-    {"ticker": "OSW", "razina": 25.20},
-    {"ticker": "COHU", "razina": 58.50},
-    {"ticker": "HTFL", "razina": 33.00},
-    {"ticker": "FTNT", "razina": 149.00},
-    {"ticker": "DD", "razina": 51.50},
-    {"ticker": "GD", "razina": 365.00},
-    {"ticker": "DNLI", "razina": 22.30},
-    {"ticker": "HUN", "razina": 15.20},
-    {"ticker": "M", "razina": 24.00},
-    {"ticker": "TWTX", "razina": 48.60},
-    {"ticker": "VIRT", "razina": 55.50},
-    {"ticker": "ACLS", "razina": 171.70},
-    {"ticker": "FRO", "razina": 39.60},
-    {"ticker": "BIRK", "razina": 48.00},
-    {"ticker": "VIAV", "razina": 55.40},
-    {"ticker": "CAVA", "razina": 99.60},  
-    
+    {"ticker": "NBIS", "razina": 279.50},
+    {"ticker": "UPS", "razina": 110.50},
+    {"ticker": "LRCX", "razina": 393.50},
+    {"ticker": "PGR", "razina": 207.00},
+    {"ticker": "MCD", "razina": 288.50},
+    {"ticker": "GOOGL", "razina": 373.50},
+    {"ticker": "GD", "razina": 367.50},
+    {"ticker": "SEI", "razina": 79.00},
+    {"ticker": "CX", "razina": 13.40},
+    {"ticker": "BHP", "razina": 93.00},
+    {"ticker": "BE", "razina": 303.50},
+    {"ticker": "CRS", "razina": 564.00},
+    {"ticker": "DAVE", "razina": 309.00},
+    {"ticker": "DGII", "razina": 68.60},
+    {"ticker": "EGO", "razina": 38.20},
+    {"ticker": "EVRG", "razina": 84.50},
+    {"ticker": "EMR", "razina": 152.60},
+    {"ticker": "AMD", "razina": 527.80},
+    {"ticker": "FCX", "razina": 70.30},
+    {"ticker": "FDX", "razina": 338.00},
+    {"ticker": "FRO", "razina": 39.50},
+    {"ticker": "FTNT", "razina": 148.80},
+    {"ticker": "IVZ", "razina": 29.50},
+    {"ticker": "NVS", "razina": 152.50},
+    {"ticker": "POWL", "razina": 310.00},
+    {"ticker": "CYTK", "razina": 78.70},
+    {"ticker": "FPS", "razina": 63.00},
+    {"ticker": "OC", "razina": 128.50},
+    {"ticker": "ENTG", "razina": 159.50},
+    {"ticker": "SIMO", "razina": 294.00},
+    {"ticker": "GRMN", "razina": 244.00},
+    {"ticker": "TER", "razina": 422.00},
+    {"ticker": "TRV", "razina": 311.00},
+    {"ticker": "ARM", "razina": 412.00},
+    {"ticker": "AGX", "razina": 728.00},
+    {"ticker": "CEG", "razina": 273.00},
+    {"ticker": "OSCR", "razina": 29.15},
+    {"ticker": "CAT", "razina": 942.00},
+    {"ticker": "VMC", "razina": 303.00},
+    {"ticker": "DOCN", "razina": 181.00},
+    {"ticker": "VDC", "razina": 687.00},
+    {"ticker": "STX", "razina": 1030.00},
+    {"ticker": "NN", "razina": 23.55},
+    {"ticker": "BAP", "razina": 375.00},
+    {"ticker": "AYA", "razina": 21.50},
+   
 ]
 
 
-# ─────────────────────────────────────────────────────────────
+# ============================================================
 # DEBUG
-# ─────────────────────────────────────────────────────────────
+# ============================================================
 
 def debug_env():
     print("ENV provjera:")
@@ -120,9 +117,9 @@ def debug_env():
     print()
 
 
-# ─────────────────────────────────────────────────────────────
-# TRADING CALENDAR
-# ─────────────────────────────────────────────────────────────
+# ============================================================
+# US TRADING CALENDAR
+# ============================================================
 
 def _nth_weekday(year, month, weekday, n):
     d = date(year, month, 1)
@@ -133,7 +130,6 @@ def _nth_weekday(year, month, weekday, n):
             count += 1
             if count == n:
                 return d
-
         d += timedelta(days=1)
 
 
@@ -153,17 +149,15 @@ def us_holidays(year):
     def obs(d):
         if d.weekday() == 6:
             return d + timedelta(days=1)
-
         if d.weekday() == 5:
             return d - timedelta(days=1)
-
         return d
 
     h = set()
 
     h.add(obs(date(year, 1, 1)))
-    h.add(_nth_weekday(year, 1, 0, 3))   # Martin Luther King Jr. Day
-    h.add(_nth_weekday(year, 2, 0, 3))   # Presidents' Day
+    h.add(_nth_weekday(year, 1, 0, 3))
+    h.add(_nth_weekday(year, 2, 0, 3))
 
     # Good Friday
     a = year % 19
@@ -180,12 +174,12 @@ def us_holidays(year):
 
     h.add(date(year, mo, dy) - timedelta(days=2))
 
-    h.add(_last_weekday(year, 5, 0))     # Memorial Day
-    h.add(obs(date(year, 6, 19)))        # Juneteenth
-    h.add(obs(date(year, 7, 4)))         # Independence Day
-    h.add(_nth_weekday(year, 9, 0, 1))   # Labor Day
-    h.add(_nth_weekday(year, 11, 3, 4))  # Thanksgiving
-    h.add(obs(date(year, 12, 25)))       # Christmas
+    h.add(_last_weekday(year, 5, 0))
+    h.add(obs(date(year, 6, 19)))
+    h.add(obs(date(year, 7, 4)))
+    h.add(_nth_weekday(year, 9, 0, 1))
+    h.add(_nth_weekday(year, 11, 3, 4))
+    h.add(obs(date(year, 12, 25)))
 
     return h
 
@@ -211,22 +205,29 @@ def market_open_alert_window(now_et=None):
         return False
 
     open_dt = datetime.combine(now_et.date(), dtime(9, 30), tzinfo=ET)
-    close_dt = datetime.combine(now_et.date(), dtime(16, 0), tzinfo=ET)
+    end_dt = open_dt + timedelta(minutes=OPEN_ALERT_WINDOW_MINUTES)
 
-    return open_dt <= now_et <= close_dt
+    return open_dt <= now_et <= end_dt
 
 
 def open_window_text():
-    return "09:30–16:00 ET"
+    start_hour = 9
+    start_minute = 30
 
-# ─────────────────────────────────────────────────────────────
+    end_minute_total = start_minute + OPEN_ALERT_WINDOW_MINUTES
+    end_hour = start_hour + end_minute_total // 60
+    end_minute = end_minute_total % 60
+
+    return f"09:30–{end_hour:02d}:{end_minute:02d} ET"
+
+
+# ============================================================
 # STATE
-# ─────────────────────────────────────────────────────────────
+# ============================================================
 
 def default_state():
     return {
-        "sent_g3": {},
-        "open_checks": {}
+        "sent_open_alerts": {}
     }
 
 
@@ -245,9 +246,7 @@ def load_state():
         if not isinstance(data, dict):
             return default_state()
 
-        data.setdefault("sent_g3", {})
-        data.setdefault("open_checks", {})
-
+        data.setdefault("sent_open_alerts", {})
         return data
 
     except Exception as e:
@@ -261,77 +260,23 @@ def save_state(state):
 
 
 def already_sent_today(state, key, today_s):
-    sent_g3 = state.get("sent_g3", {})
-
-    if today_s in sent_g3.get(key, []):
-        return True
-
-    # Kompatibilnost sa starim state formatom ako postoji.
-    old_g3 = state.get("g3", {})
-    old_item = old_g3.get(key, {})
-
-    if isinstance(old_item, dict):
-        old_dates = old_item.get("datumi", [])
-        if today_s in old_dates:
-            return True
-
-    return False
+    sent = state.get("sent_open_alerts", {})
+    return today_s in sent.get(key, [])
 
 
 def mark_sent_today(state, key, today_s):
-    state.setdefault("sent_g3", {})
-    state["sent_g3"].setdefault(key, [])
+    state.setdefault("sent_open_alerts", {})
+    state["sent_open_alerts"].setdefault(key, [])
 
-    if today_s not in state["sent_g3"][key]:
-        state["sent_g3"][key].append(today_s)
+    if today_s not in state["sent_open_alerts"][key]:
+        state["sent_open_alerts"][key].append(today_s)
 
-    # Čuvaj samo zadnjih 20 zapisa po ticker/razina kombinaciji.
-    state["sent_g3"][key] = sorted(state["sent_g3"][key])[-20:]
-
-
-def open_already_checked_today(state, today_s):
-    open_checks = state.get("open_checks", {})
-    item = open_checks.get(today_s, {})
-
-    if not isinstance(item, dict):
-        return False
-
-    return item.get("status") == "checked"
+    state["sent_open_alerts"][key] = sorted(state["sent_open_alerts"][key])[-20:]
 
 
-def mark_open_checked_today(
-    state,
-    today_s,
-    checked,
-    valid_prev_eod_count,
-    g2_ok_count,
-    open_valid_count,
-    alerts_count,
-    note=""
-):
-    state.setdefault("open_checks", {})
-
-    now_et_s = datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S ET")
-
-    state["open_checks"][today_s] = {
-        "status": "checked",
-        "checked_at_et": now_et_s,
-        "checked": checked,
-        "valid_prev_eod_count": valid_prev_eod_count,
-        "g2_ok_count": g2_ok_count,
-        "open_valid_count": open_valid_count,
-        "alerts_count": alerts_count,
-        "note": note,
-    }
-
-    # Čuvaj samo zadnjih 40 dana.
-    keys = sorted(state["open_checks"].keys())[-40:]
-    state["open_checks"] = {k: state["open_checks"][k] for k in keys}
-
-
-# ─────────────────────────────────────────────────────────────
+# ============================================================
 # FMP
-# ─────────────────────────────────────────────────────────────
+# ============================================================
 
 def http_get_json(url, timeout=20):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -354,19 +299,19 @@ def fetch_quote(ticker):
 
         q = data[0]
 
-        price = q.get("price")
         open_ = q.get("open")
+        price = q.get("price")
 
-        if price is None and open_ is None:
+        if open_ is None:
             return None
 
         return {
+            "open": float(open_),
             "price": float(price) if price is not None else None,
-            "open": float(open_) if open_ is not None else None,
         }
 
     except Exception as e:
-        print(f"  quote greška {ticker}: {e}")
+        print(f"Quote greška {ticker}: {e}")
         return None
 
 
@@ -406,13 +351,13 @@ def fetch_eod_history(ticker, from_date):
         return result
 
     except Exception as e:
-        print(f"  povijest greška {ticker}: {e}")
+        print(f"Povijest greška {ticker}: {e}")
         return {}
 
 
-# ─────────────────────────────────────────────────────────────
+# ============================================================
 # TELEGRAM
-# ─────────────────────────────────────────────────────────────
+# ============================================================
 
 def split_message(text, max_len=TELEGRAM_MAX_LEN):
     lines = text.splitlines(keepends=True)
@@ -486,19 +431,29 @@ def send_long_telegram_message(text):
     return all_ok
 
 
-def format_simple_g3_alert(alerts):
+def format_open_alert(alerts, today_s, prev_s):
     now_et = datetime.now(ET).strftime("%d.%m.%Y %H:%M ET")
+    now_zg = datetime.now(ZAGREB).strftime("%d.%m.%Y %H:%M Zagreb")
 
     lines = []
-    lines.append("G3 ALERT — USA OPEN")
+    lines.append("OPEN PRICE ALERT")
     lines.append(now_et)
+    lines.append(now_zg)
     lines.append("")
-    lines.append("Ticker | Razina | Open | Open vs razina")
+    lines.append(f"Trading day: {today_s}")
+    lines.append(f"Prethodni trading day: {prev_s}")
+    lines.append("")
+    lines.append("Uvjet:")
+    lines.append("Prethodni close >= razina")
+    lines.append("Današnji open >= razina")
+    lines.append("")
+    lines.append("Ticker | Razina | Prev close | Open | Open vs razina")
 
     for a in alerts:
         lines.append(
             f"{a['ticker']} | "
             f"{a['razina']:.2f} | "
+            f"{a['prev_close']:.2f} | "
             f"{a['open']:.2f} | "
             f"{a['open_vs_razina_pct']:+.2f}%"
         )
@@ -506,45 +461,11 @@ def format_simple_g3_alert(alerts):
     return "\n".join(lines)
 
 
-def format_status_message(
-    today_s,
-    prev_s,
-    checked,
-    valid_prev_eod_count,
-    g2_ok_count,
-    open_valid_count,
-    quote_missing_for_g2,
-    already_sent_count,
-    alerts_count,
-    mark_checked,
-    reason
-):
-    now_et = datetime.now(ET).strftime("%d.%m.%Y %H:%M ET")
-
-    lines = []
-    lines.append("G3 OPEN CHECK — STATUS")
-    lines.append(now_et)
-    lines.append("")
-    lines.append(f"Trading day: {today_s}")
-    lines.append(f"Prethodni trading day: {prev_s}")
-    lines.append("")
-    lines.append(f"Provjereno tickera: {checked}")
-    lines.append(f"Ima EOD podatke za prethodni dan: {valid_prev_eod_count}")
-    lines.append(f"G2 od jučer: {g2_ok_count}")
-    lines.append(f"G2 s dostupnim današnjim openom: {open_valid_count}")
-    lines.append(f"G2 bez dostupnog opena: {quote_missing_for_g2}")
-    lines.append(f"Već poslano danas: {already_sent_count}")
-    lines.append(f"Novi G3 alarmi: {alerts_count}")
-    lines.append("")
-    lines.append(f"Open provjera zaključana za danas: {'DA' if mark_checked else 'NE'}")
-    lines.append(f"Razlog: {reason}")
-
-    return "\n".join(lines)
-
-
 def test_telegram():
-    now = datetime.now(ET).strftime("%d.%m.%Y %H:%M ET")
-    text = f"Stock Alert bot aktivan\nTest poruka {now}"
+    now_et = datetime.now(ET).strftime("%d.%m.%Y %H:%M ET")
+    now_zg = datetime.now(ZAGREB).strftime("%d.%m.%Y %H:%M Zagreb")
+
+    text = f"Stock Alert bot aktivan\n{now_et}\n{now_zg}"
 
     ok = send_telegram_message(text)
 
@@ -554,22 +475,25 @@ def test_telegram():
         print("Test poruka NIJE poslana.")
 
 
-# ─────────────────────────────────────────────────────────────
-# MAIN LOGIKA — G3 OPEN
-# ─────────────────────────────────────────────────────────────
+# ============================================================
+# MAIN LOGIKA
+# ============================================================
 
 def provjeri(force=False):
     now_et = datetime.now(ET)
+    now_zg = datetime.now(ZAGREB)
+
     today = now_et.date()
     today_s = today.isoformat()
 
-    print(f"Provjera: {now_et.strftime('%d.%m.%Y %H:%M:%S ET')}")
+    print(f"Provjera ET:     {now_et.strftime('%d.%m.%Y %H:%M:%S ET')}")
+    print(f"Provjera Zagreb: {now_zg.strftime('%d.%m.%Y %H:%M:%S Zagreb')}")
     print(f"State file: {STATE_FILE}")
     debug_env()
 
     if not FMP_API_KEY:
         print("FMP_API_KEY nije postavljen. Prekid.")
-        send_telegram_message("G3 OPEN CHECK greška: FMP_API_KEY nije postavljen.")
+        send_telegram_message("OPEN PRICE ALERT greška: FMP_API_KEY nije postavljen.")
         return
 
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -578,50 +502,41 @@ def provjeri(force=False):
 
     if not force and not market_open_alert_window(now_et):
         print(
-             "Nije vrijeme za G3 open provjeru. "
-             "Bot radi nakon USA opena, od 09:30 do 16:00 ET."
+            f"Nije vrijeme za open provjeru. "
+            f"Dozvoljeni prozor je {open_window_text()}."
         )
         print("Nema Telegram slanja.")
         return
 
     if not is_trading_day(today):
         print("Danas nije US trading day. Prekid.")
-        if force:
-            send_telegram_message(f"G3 OPEN CHECK: {today_s} nije US trading day.")
         return
 
     prev_day = previous_trading_day(today)
     prev_s = prev_day.isoformat()
 
     print(f"Trading day: {today_s}")
-    print(f"Prethodni trading day za G2: {prev_s}")
+    print(f"Prethodni trading day: {prev_s}")
     print(f"Alert window: {open_window_text()}")
     print(f"Force mode: {force}")
     print()
 
     state = load_state()
 
-    if open_already_checked_today(state, today_s) and not force:
-        print(f"Open price je već uspješno provjeren za {today_s}.")
-        print("Ne provjeravam ponovno isti dan.")
-        print("Nema Telegram slanja.")
-        return
-
     alerts = []
+
     checked = 0
-    valid_prev_eod_count = 0
-    g2_ok_count = 0
-    open_valid_count = 0
-    quote_missing_for_g2 = 0
+    prev_close_ok_count = 0
+    open_ok_count = 0
+    missing_prev_eod = 0
+    missing_open = 0
     already_sent_count = 0
 
     history_from = prev_day - timedelta(days=7)
-    prag = 1 + PRAG_POSTO / 100
 
     for item in DIONICE:
         ticker = item["ticker"].strip().upper()
         razina = float(item["razina"])
-        trigger = razina * prag
         k = key_for(ticker, razina)
 
         if already_sent_today(state, k, today_s):
@@ -635,64 +550,63 @@ def provjeri(force=False):
         prev_ohlc = hist.get(prev_s)
 
         if not prev_ohlc:
+            missing_prev_eod += 1
             print(f"{ticker:<8} nema EOD podatke za {prev_s}")
             continue
 
-        valid_prev_eod_count += 1
-
-        prev_high = prev_ohlc.get("high")
         prev_close = prev_ohlc.get("close")
 
-        if prev_high is None or prev_close is None or prev_high <= 0 or prev_close <= 0:
-            print(f"{ticker:<8} nepotpuni EOD podaci za {prev_s}")
+        if prev_close is None or prev_close <= 0:
+            missing_prev_eod += 1
+            print(f"{ticker:<8} nema valjani prethodni close za {prev_s}")
             continue
 
-        # G2 uvjet: prethodni dan high + close iznad triggera.
-        g2_ok = prev_high >= trigger and prev_close >= trigger
+        prev_close_ok = prev_close >= razina
 
-        if not g2_ok:
+        if not prev_close_ok:
             print(
-                f"{ticker:<8} G2 NE | "
-                f"razina={razina:.2f} trigger={trigger:.2f} "
-                f"prev_high={prev_high:.2f} prev_close={prev_close:.2f}"
+                f"{ticker:<8} NE | "
+                f"razina={razina:.2f} "
+                f"prev_close={prev_close:.2f} "
+                f"uvjet_prev_close=NE"
             )
             continue
 
-        g2_ok_count += 1
+        prev_close_ok_count += 1
 
         quote = fetch_quote(ticker)
 
         if not quote:
-            quote_missing_for_g2 += 1
-            print(f"{ticker:<8} G2 DA, ali nema quote/open podatka.")
+            missing_open += 1
+            print(f"{ticker:<8} prethodni close OK, ali nema quote/open podatka.")
             continue
 
         open_today = quote.get("open")
 
         if open_today is None or open_today <= 0:
-            quote_missing_for_g2 += 1
-            print(f"{ticker:<8} G2 DA, ali današnji open nije dostupan.")
+            missing_open += 1
+            print(f"{ticker:<8} prethodni close OK, ali današnji open nije dostupan.")
             continue
 
-        open_valid_count += 1
-
-        # G3 uvjet: današnji open iznad triggera.
-        g3_ok = open_today >= trigger
-
+        open_ok = open_today >= razina
         open_vs_razina_pct = (open_today - razina) / razina * 100
 
         print(
-            f"{ticker:<8} G2 DA | "
-            f"open={open_today:.2f} razina={razina:.2f} "
-            f"trigger={trigger:.2f} "
+            f"{ticker:<8} "
+            f"razina={razina:.2f} "
+            f"prev_close={prev_close:.2f} "
+            f"open={open_today:.2f} "
             f"open_vs_razina={open_vs_razina_pct:+.2f}% "
-            f"G3={'DA' if g3_ok else 'NE'}"
+            f"ALARM={'DA' if open_ok else 'NE'}"
         )
 
-        if g3_ok:
+        if open_ok:
+            open_ok_count += 1
+
             alerts.append({
                 "ticker": ticker,
                 "razina": razina,
+                "prev_close": prev_close,
                 "open": open_today,
                 "open_vs_razina_pct": open_vs_razina_pct,
             })
@@ -700,92 +614,38 @@ def provjeri(force=False):
             mark_sent_today(state, k, today_s)
 
     print()
-    print(f"Provjereno: {checked}")
-    print(f"EOD podaci dostupni: {valid_prev_eod_count}")
-    print(f"G2 od jučer: {g2_ok_count}")
-    print(f"G2 s open podatkom: {open_valid_count}")
-    print(f"G2 bez open podatka: {quote_missing_for_g2}")
+    print(f"Provjereno tickera: {checked}")
+    print(f"Prethodni close iznad razine: {prev_close_ok_count}")
+    print(f"Današnji open iznad razine: {open_ok_count}")
+    print(f"Nema prethodni EOD: {missing_prev_eod}")
+    print(f"Nema današnji open: {missing_open}")
     print(f"Već poslano danas: {already_sent_count}")
-    print(f"Novi G3 alarmi: {len(alerts)}")
+    print(f"Novi alarmi: {len(alerts)}")
     print()
 
-    # Logika zaključavanja dana:
-    # 1) Ako nema EOD podataka ni za jednu dionicu, vjerojatno FMP/history problem -> ne zaključavaj.
-    # 2) Ako postoje G2 kandidati, ali nijedan nema open podatak, FMP vjerojatno još nije osvježio open -> ne zaključavaj.
-    # 3) Ako nema G2 kandidata, provjera je završena -> zaključaj.
-    # 4) Ako ima G2 kandidata i svi su imali open ili barem nema missing opena -> zaključaj.
+    if not alerts:
+        print("Nema novih open price alarma. Ne šaljem Telegram poruku.")
+        save_state(state)
+        print("State spremljen.")
+        return
 
-    mark_checked = True
-    reason = "Open provjera uspješno završena."
-
-    if valid_prev_eod_count == 0:
-        mark_checked = False
-        reason = "Nema EOD podataka ni za jednu dionicu. Mogući FMP/history problem."
-
-    elif g2_ok_count > 0 and open_valid_count == 0:
-        mark_checked = False
-        reason = "Postoje G2 kandidati, ali FMP još nema današnji open podatak."
-
-    elif g2_ok_count > 0 and quote_missing_for_g2 > 0:
-        mark_checked = False
-        reason = "Neki G2 kandidati nemaju open podatak. Puštam kasniji cron da pokuša ponovno."
-
-    status_msg = format_status_message(
-        today_s=today_s,
-        prev_s=prev_s,
-        checked=checked,
-        valid_prev_eod_count=valid_prev_eod_count,
-        g2_ok_count=g2_ok_count,
-        open_valid_count=open_valid_count,
-        quote_missing_for_g2=quote_missing_for_g2,
-        already_sent_count=already_sent_count,
-        alerts_count=len(alerts),
-        mark_checked=mark_checked,
-        reason=reason
-    )
-
-    telegram_ok = True
-
-    if alerts:
-        alert_message = format_simple_g3_alert(alerts)
-        telegram_ok = send_long_telegram_message(alert_message)
-
-        # Nakon alarma pošalji i status, da znaš da je provjera zaključana ili ne.
-        send_long_telegram_message(status_msg)
-
-    else:
-        telegram_ok = send_long_telegram_message(status_msg)
-
-    if mark_checked:
-        mark_open_checked_today(
-            state=state,
-            today_s=today_s,
-            checked=checked,
-            valid_prev_eod_count=valid_prev_eod_count,
-            g2_ok_count=g2_ok_count,
-            open_valid_count=open_valid_count,
-            alerts_count=len(alerts),
-            note=reason
-        )
-    else:
-        print("Open provjera NIJE zaključana za danas.")
-        print("Kasniji cron smije pokušati ponovno.")
+    message = format_open_alert(alerts, today_s, prev_s)
+    telegram_ok = send_long_telegram_message(message)
 
     if telegram_ok:
         save_state(state)
         print("State spremljen.")
     else:
-        # Ako Telegram nije poslan, ne želimo lažno zaključati dan.
-        print("Telegram nije uspješno poslan.")
-        print("State se neće spremiti kao završena provjera.")
+        print("Telegram nije uspješno poslan. State se neće spremiti.")
         return
 
-    print(f"Gotovo: {datetime.now(ET).strftime('%H:%M:%S ET')}")
+    print(f"Gotovo ET:     {datetime.now(ET).strftime('%H:%M:%S ET')}")
+    print(f"Gotovo Zagreb: {datetime.now(ZAGREB).strftime('%H:%M:%S Zagreb')}")
 
 
-# ─────────────────────────────────────────────────────────────
+# ============================================================
 # ENTRY POINT
-# ─────────────────────────────────────────────────────────────
+# ============================================================
 
 if __name__ == "__main__":
     import sys
