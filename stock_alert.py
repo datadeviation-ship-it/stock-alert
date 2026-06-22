@@ -2,7 +2,8 @@
 stock_alert.py
 
 CILJ:
-- Provjeriti samo open price nakon otvaranja USA burze.
+- Provjeravati open price nakon otvaranja USA burze.
+- Provjera traje od 09:30 ET do 15:00 ET.
 - Alarm se šalje samo ako je:
     1) prethodni trading day close >= zadana razina
     2) današnji open >= zadana razina
@@ -38,9 +39,13 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 ET = zoneinfo.ZoneInfo("America/New_York")
 ZAGREB = zoneinfo.ZoneInfo("Europe/Zagreb")
 
-# Provjera samo nakon otvaranja tržišta.
-# 20 znači 09:30–09:50 ET, što je ljeti 15:30–15:50 Zagreb.
-OPEN_ALERT_WINDOW_MINUTES = 20
+# Provjera od otvaranja USA burze do sat vremena prije zatvaranja.
+# 09:30–15:00 ET
+# Ljeti je to 15:30–21:00 Zagreb.
+# Zimi je to također 15:30–21:00 Zagreb, dok su SAD i Europa usklađeni,
+# ali postoje prijelazni tjedni zbog različitih datuma promjene vremena.
+MARKET_OPEN = dtime(9, 30)
+LAST_OPEN_CHECK = dtime(15, 0)
 
 TELEGRAM_MAX_LEN = 3500
 
@@ -100,7 +105,6 @@ DIONICE = [
     {"ticker": "NN", "razina": 23.55},
     {"ticker": "BAP", "razina": 375.00},
     {"ticker": "AYA", "razina": 21.50},
-   
 ]
 
 
@@ -130,6 +134,7 @@ def _nth_weekday(year, month, weekday, n):
             count += 1
             if count == n:
                 return d
+
         d += timedelta(days=1)
 
 
@@ -149,17 +154,19 @@ def us_holidays(year):
     def obs(d):
         if d.weekday() == 6:
             return d + timedelta(days=1)
+
         if d.weekday() == 5:
             return d - timedelta(days=1)
+
         return d
 
     h = set()
 
-    h.add(obs(date(year, 1, 1)))
-    h.add(_nth_weekday(year, 1, 0, 3))
-    h.add(_nth_weekday(year, 2, 0, 3))
+    h.add(obs(date(year, 1, 1)))          # New Year
+    h.add(_nth_weekday(year, 1, 0, 3))    # Martin Luther King Jr. Day
+    h.add(_nth_weekday(year, 2, 0, 3))    # Presidents' Day
 
-    # Good Friday
+    # Good Friday calculation
     a = year % 19
     b, c = divmod(year, 100)
     d2, e = divmod(b, 4)
@@ -172,14 +179,14 @@ def us_holidays(year):
     mo = (hh + l - 7 * m + 114) // 31
     dy = (hh + l - 7 * m + 114) % 31 + 1
 
-    h.add(date(year, mo, dy) - timedelta(days=2))
+    h.add(date(year, mo, dy) - timedelta(days=2))  # Good Friday
 
-    h.add(_last_weekday(year, 5, 0))
-    h.add(obs(date(year, 6, 19)))
-    h.add(obs(date(year, 7, 4)))
-    h.add(_nth_weekday(year, 9, 0, 1))
-    h.add(_nth_weekday(year, 11, 3, 4))
-    h.add(obs(date(year, 12, 25)))
+    h.add(_last_weekday(year, 5, 0))       # Memorial Day
+    h.add(obs(date(year, 6, 19)))          # Juneteenth
+    h.add(obs(date(year, 7, 4)))           # Independence Day
+    h.add(_nth_weekday(year, 9, 0, 1))     # Labor Day
+    h.add(_nth_weekday(year, 11, 3, 4))    # Thanksgiving
+    h.add(obs(date(year, 12, 25)))         # Christmas
 
     return h
 
@@ -204,21 +211,13 @@ def market_open_alert_window(now_et=None):
     if not is_trading_day(now_et.date()):
         return False
 
-    open_dt = datetime.combine(now_et.date(), dtime(9, 30), tzinfo=ET)
-    end_dt = open_dt + timedelta(minutes=OPEN_ALERT_WINDOW_MINUTES)
+    current_time = now_et.time()
 
-    return open_dt <= now_et <= end_dt
+    return MARKET_OPEN <= current_time <= LAST_OPEN_CHECK
 
 
 def open_window_text():
-    start_hour = 9
-    start_minute = 30
-
-    end_minute_total = start_minute + OPEN_ALERT_WINDOW_MINUTES
-    end_hour = start_hour + end_minute_total // 60
-    end_minute = end_minute_total % 60
-
-    return f"09:30–{end_hour:02d}:{end_minute:02d} ET"
+    return "09:30–15:00 ET"
 
 
 # ============================================================
@@ -271,7 +270,9 @@ def mark_sent_today(state, key, today_s):
     if today_s not in state["sent_open_alerts"][key]:
         state["sent_open_alerts"][key].append(today_s)
 
-    state["sent_open_alerts"][key] = sorted(state["sent_open_alerts"][key])[-20:]
+    state["sent_open_alerts"][key] = sorted(
+        state["sent_open_alerts"][key]
+    )[-20:]
 
 
 # ============================================================
@@ -279,7 +280,10 @@ def mark_sent_today(state, key, today_s):
 # ============================================================
 
 def http_get_json(url, timeout=20):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Mozilla/5.0"}
+    )
 
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
@@ -288,7 +292,8 @@ def http_get_json(url, timeout=20):
 def fetch_quote(ticker):
     url = (
         "https://financialmodelingprep.com/stable/quote"
-        f"?symbol={urllib.parse.quote(ticker)}&apikey={FMP_API_KEY}"
+        f"?symbol={urllib.parse.quote(ticker)}"
+        f"&apikey={FMP_API_KEY}"
     )
 
     try:
@@ -368,6 +373,7 @@ def split_message(text, max_len=TELEGRAM_MAX_LEN):
         if len(current) + len(line) > max_len:
             if current.strip():
                 chunks.append(current)
+
             current = line
         else:
             current += line
@@ -493,7 +499,9 @@ def provjeri(force=False):
 
     if not FMP_API_KEY:
         print("FMP_API_KEY nije postavljen. Prekid.")
-        send_telegram_message("OPEN PRICE ALERT greška: FMP_API_KEY nije postavljen.")
+        send_telegram_message(
+            "OPEN PRICE ALERT greška: FMP_API_KEY nije postavljen."
+        )
         return
 
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -578,14 +586,20 @@ def provjeri(force=False):
 
         if not quote:
             missing_open += 1
-            print(f"{ticker:<8} prethodni close OK, ali nema quote/open podatka.")
+            print(
+                f"{ticker:<8} prethodni close OK, "
+                f"ali nema quote/open podatka."
+            )
             continue
 
         open_today = quote.get("open")
 
         if open_today is None or open_today <= 0:
             missing_open += 1
-            print(f"{ticker:<8} prethodni close OK, ali današnji open nije dostupan.")
+            print(
+                f"{ticker:<8} prethodni close OK, "
+                f"ali današnji open nije dostupan."
+            )
             continue
 
         open_ok = open_today >= razina
