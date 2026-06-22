@@ -2,8 +2,19 @@ name: Stock Alert
 
 on:
   schedule:
-    # Zagreb ljeto CEST: 15:32–15:47 = 13:32–13:47 UTC
-    - cron: '32,37,42,47 13 * * 1-5'
+    # US market open do 1h prije zatvaranja
+    # Ljeto:
+    # 09:30–15:00 ET = 15:30–21:00 Zagreb = 13:30–19:00 UTC
+
+    # 09:30 i 09:45 ET
+    - cron: '30,45 13 * * 1-5'
+
+    # 10:00–14:45 ET
+    - cron: '0,15,30,45 14-18 * * 1-5'
+
+    # 15:00 ET, zadnja provjera sat vremena prije zatvaranja
+    - cron: '0 19 * * 1-5'
+
   workflow_dispatch:
 
 concurrency:
