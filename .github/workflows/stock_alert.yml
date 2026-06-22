@@ -4,16 +4,17 @@ on:
   schedule:
     # US market open do 1h prije zatvaranja
     # Ljeto:
-    # 09:30–15:00 ET = 15:30–21:00 Zagreb = 13:30–19:00 UTC
+    # 09:31–15:01 ET = 15:31–21:01 Zagreb = 13:31–19:01 UTC
+    # Pomaknuto 1 minutu da ne ide baš na pune GitHub cron minute.
 
-    # 09:30 i 09:45 ET
-    - cron: '30,45 13 * * 1-5'
+    # 09:31 i 09:46 ET
+    - cron: '31,46 13 * * 1-5'
 
-    # 10:00–14:45 ET
-    - cron: '0,15,30,45 14-18 * * 1-5'
+    # 10:01–14:46 ET
+    - cron: '1,16,31,46 14-18 * * 1-5'
 
-    # 15:00 ET, zadnja provjera sat vremena prije zatvaranja
-    - cron: '0 19 * * 1-5'
+    # 15:01 ET, zadnja provjera oko sat vremena prije zatvaranja
+    - cron: '1 19 * * 1-5'
 
   workflow_dispatch:
 
@@ -39,6 +40,51 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Debug vremena i commita
+        run: |
+          echo "======================================"
+          echo "UTC vrijeme:"
+          date -u
+          echo "======================================"
+          echo "Zagreb vrijeme:"
+          TZ=Europe/Zagreb date
+          echo "======================================"
+          echo "New York vrijeme:"
+          TZ=America/New_York date
+          echo "======================================"
+          echo "Event name:"
+          echo "${{ github.event_name }}"
+          echo "Schedule:"
+          echo "${{ github.event.schedule }}"
+          echo "======================================"
+          echo "Branch/ref:"
+          echo "${{ github.ref }}"
+          echo "Commit koji runner koristi:"
+          git rev-parse HEAD
+          echo "======================================"
+
+      - name: Provjeri stvarni stock_alert.py na runneru
+        run: |
+          echo "======================================"
+          echo "Tražim stari tekst 09:30–09:50:"
+          grep -n "09:30–09:50" stock_alert.py || true
+          echo "======================================"
+          echo "Tražim OPEN_ALERT_WINDOW_MINUTES:"
+          grep -n "OPEN_ALERT_WINDOW_MINUTES" stock_alert.py || true
+          echo "======================================"
+          echo "Tražim novi tekst 09:30–15:00:"
+          grep -n "09:30–15:00" stock_alert.py || true
+          echo "======================================"
+          echo "Tražim MARKET_OPEN:"
+          grep -n "MARKET_OPEN" stock_alert.py || true
+          echo "======================================"
+          echo "Tražim LAST_OPEN_CHECK:"
+          grep -n "LAST_OPEN_CHECK" stock_alert.py || true
+          echo "======================================"
+          echo "Prvih 90 linija stock_alert.py:"
+          sed -n '1,90p' stock_alert.py
+          echo "======================================"
+
       - name: Pokreni provjeru
         env:
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
@@ -49,6 +95,18 @@ jobs:
           echo "Telegram token duljina: ${#TELEGRAM_TOKEN}"
           echo "Chat ID: ***"
           python stock_alert.py
+
+      - name: Prikaži state file nakon provjere
+        run: |
+          echo "======================================"
+          echo "Provjera state filea:"
+          if [ -f stock_alert_poslano.json ]; then
+            echo "State file postoji:"
+            cat stock_alert_poslano.json
+          else
+            echo "State file NE postoji."
+          fi
+          echo "======================================"
 
       - name: Spremi state file
         run: |
