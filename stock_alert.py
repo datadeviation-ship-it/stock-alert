@@ -77,7 +77,7 @@ DIONICE = [
     {"ticker": "EGO", "razina": 38.20},
     {"ticker": "EVRG", "razina": 84.50},
     {"ticker": "EMR", "razina": 152.60},
-    {"ticker": "AMD", "razina": 527.80},
+    {"ticker": "AMD", "razina": 547.80},
     {"ticker": "FCX", "razina": 70.30},
     {"ticker": "FDX", "razina": 338.00},
     {"ticker": "FRO", "razina": 39.50},
@@ -105,6 +105,22 @@ DIONICE = [
     {"ticker": "NN", "razina": 23.55},
     {"ticker": "BAP", "razina": 375.00},
     {"ticker": "AYA", "razina": 21.50},
+    {"ticker": "TTWO", "razina": 248.50},
+    {"ticker": "ALLY", "razina": 47.50},
+    {"ticker": "VLO", "razina": 264.50},
+    {"ticker": "ABNB", "razina": 147.50},
+    {"ticker": "MXL", "razina": 104.50},
+    {"ticker": "NCLH", "razina": 21.50},
+    {"ticker": "RCL", "razina": 321.50},
+    {"ticker": "LB", "razina": 79.50},
+    {"ticker": "CRWD", "razina": 771.50},
+    {"ticker": "GEV", "razina": 1150.50},
+    {"ticker": "CAT", "razina": 1055.50},
+    {"ticker": "AXON", "razina": 514.50},
+    {"ticker": "LII", "razina": 581.50},
+    {"ticker": "AZO", "razina": 3155.50},
+    {"ticker": "TOL", "razina": 167.50},
+    
 ]
 
 
